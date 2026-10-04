@@ -1,0 +1,16 @@
+{
+  "name": "lumen-desk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lumen Desk · 本地知识库 AI 桌面助手（Local-first RAG + Agent）",
+  "author": "haha",
+  "license": "MIT",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.main.json && tsc --noEmit -p tsconfig.renderer.json",
+    "dist": "npm run build && electron-builder"
+  }
+}
