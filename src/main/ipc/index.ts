@@ -5,6 +5,7 @@ import { registerSettingsHandlers } from './settings'
 import { registerOllamaHandlers } from './ollama'
 import { registerKbHandlers } from './knowledge'
 import { registerDialogHandlers } from './dialog'
+import { dismissOnboarding, getUiMeta } from '../services/uiMeta'
 
 /**
  * IPC 处理器注册中心（PRD 第 13 章：IPC 接口规范）
@@ -45,4 +46,11 @@ export function registerIpcHandlers(): void {
     arch: process.arch,
     packaged: app.isPackaged
   }))
+
+  // M6 首次引导：查状态 / 标记不再提示
+  ipcMain.handle('app:onboarding-get', () => getUiMeta())
+  ipcMain.handle('app:onboarding-dismiss', () => {
+    dismissOnboarding()
+    return { ok: true as const }
+  })
 }

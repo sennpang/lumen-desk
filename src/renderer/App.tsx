@@ -3,6 +3,7 @@ import { Sidebar } from './app/components/Sidebar'
 import { ChatView } from './app/components/ChatView'
 import { KnowledgeView } from './app/components/KnowledgeView'
 import { SettingsModal } from './app/components/SettingsModal'
+import { OnboardingModal } from './app/components/OnboardingModal'
 import { api } from './app/lib/ipc'
 import { useChat } from './app/stores/useChat'
 import { useConversations } from './app/stores/useConversations'
@@ -22,6 +23,8 @@ type AppView = 'chat' | 'knowledge'
 export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [view, setView] = useState<AppView>('chat')
+  // null=尚未查询；true=本次启动需要展示首次引导
+  const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null)
   const refreshList = useConversations((s) => s.refreshList)
 
   useEffect(() => {
@@ -33,6 +36,11 @@ export function App() {
     })
     void useSettings.getState().load()
     void refreshList()
+    // M6：查首次引导标记（onboardingDismissedAt=null 则展示）
+    void api
+      .getOnboarding()
+      .then((meta) => setShowOnboarding(meta.onboardingDismissedAt === null))
+      .catch(() => setShowOnboarding(false))
     return () => {
       offChat()
       offKb()
@@ -52,6 +60,13 @@ export function App() {
         <KnowledgeView onBack={() => setView('chat')} />
       )}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {showOnboarding && (
+        <OnboardingModal
+          onClose={() => setShowOnboarding(false)}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenKnowledge={() => setView('knowledge')}
+        />
+      )}
     </div>
   )
 }

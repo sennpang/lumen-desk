@@ -25,6 +25,12 @@ const api = {
   ping: () => ipcRenderer.invoke('app:ping'),
   /** M6 关于：版本/Electron/Chrome/Node 与平台架构 */
   about: () => ipcRenderer.invoke('app:about'),
+  /** M6 首次引导状态（onboardingDismissedAt=null 表示需要展示） */
+  getOnboarding: (): Promise<{ onboardingDismissedAt: number | null }> =>
+    ipcRenderer.invoke('app:onboarding-get'),
+  /** M6 关闭首次引导并持久化（不再自动弹出） */
+  dismissOnboarding: (): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('app:onboarding-dismiss'),
 
   chat: {
     /** 发起一次运行，返回 streamId；过程经 onEvent 推送 */
