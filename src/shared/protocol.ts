@@ -9,7 +9,7 @@
  * 原因：未来支持多窗口/并发运行时，渲染端靠 streamId 过滤属于自己的事件流，
  * 成本几乎为零，提前把协议设计对。
  */
-import type { ChatMode } from './types'
+import type { ChatMode, DocStatus } from './types'
 
 /** chat:run 入参 */
 export interface RunPayload {
@@ -18,6 +18,8 @@ export interface RunPayload {
   mode: ChatMode
   /** 用户这一轮输入的文本 */
   message: string
+  /** mode='rag' 时必填：要检索的知识库 id */
+  kbId?: string
 }
 
 export interface UsageInfo {
@@ -34,6 +36,8 @@ export type StreamEvent =
       chunkId: string
       docName: string
       snippet: string
+      /** PDF 页码（从 1 起）；docx/md/txt 为 null */
+      page: number | null
     }
   | {
       type: 'agent_step'
@@ -53,3 +57,36 @@ export type StreamEvent =
     }
   | { type: 'error'; streamId: string; message: string }
   | { type: 'done'; streamId: string; usage: UsageInfo | null }
+
+/**
+ * 知识库后台任务事件（kb:event）。
+ *
+ * 设计原因（PRD F-C1"显示导入进度、解析状态与失败原因"）：
+ * 导入是秒级到分钟级的后台任务（解析→切分→逐个 embed→写 HNSW），
+ * invoke 同步等待会让渲染端失去过程可见性。所以 kb:import 立即返回，
+ * 主进程串行处理、按生命周期推事件，渲染端增量更新文档卡片。
+ */
+export type KbEvent =
+  /** 文档入库、进入解析队列 */
+  | {
+      type: 'doc_enqueued'
+      kbId: string
+      docId: string
+      fileName: string
+      status: DocStatus
+      chunkCount: number
+      createdAt: number
+    }
+  /** 单文档处理结束（ready 带 chunkCount，failed 带 error） */
+  | {
+      type: 'doc_result'
+      kbId: string
+      docId: string
+      status: DocStatus
+      chunkCount?: number
+      error?: string
+    }
+  /** 文档被删除 */
+  | { type: 'doc_removed'; kbId: string; docId: string }
+  /** 整批导入结束（无论全部成功还是部分失败） */
+  | { type: 'import_finished'; kbId: string }

@@ -47,6 +47,9 @@ export interface ChatMessage {
 /** 模型来源 */
 export type ModelProvider = 'cloud' | 'local'
 
+/** embedding 向量化来源（可独立于对话模型选择） */
+export type EmbeddingProvider = 'ollama' | 'cloud'
+
 /** 非密设置（app_setting 表） */
 export interface AppSettings {
   provider: ModelProvider
@@ -57,6 +60,12 @@ export interface AppSettings {
   ollamaUrl: string
   /** 已选择的本地模型（带 tag，如 qwen2.5:7b）；空串表示尚未选择 */
   ollamaModel: string
+  /** 向量化服务来源：默认本地（local-first，导入文档也可完全离线） */
+  embeddingProvider: EmbeddingProvider
+  /** Ollama embedding 模型（如 nomic-embed-text / bge-m3） */
+  ollamaEmbedModel: string
+  /** 云端 embedding 模型（OpenAI 兼容 /embeddings，复用云端 baseUrl 与 Key） */
+  cloudEmbedModel: string
   /** 生成参数（F-B3） */
   temperature: number
   systemPrompt: string
@@ -92,4 +101,51 @@ export interface SettingsView extends AppSettings {
 /** 保存设置入参：apiKey 为可选——留空表示沿用已存密钥，填了才覆盖 */
 export interface SaveSettingsInput extends AppSettings {
   apiKey?: string
+}
+
+// ---------------- 知识库（M3 / PRD 第 12 章） ----------------
+
+export type DocStatus = 'parsing' | 'ready' | 'failed'
+
+export interface KnowledgeBaseInfo {
+  id: string
+  name: string
+  createdAt: number
+  /** 库内文档数（聚合字段） */
+  docCount: number
+}
+
+export interface DocumentInfo {
+  id: string
+  kbId: string
+  fileName: string
+  fileHash: string | null
+  status: DocStatus
+  chunkCount: number
+  createdAt: number
+  /** 解析失败原因（status=failed 时存在） */
+  error: string | null
+}
+
+/** chunk 元信息：PDF 有页码；Markdown 有标题面包屑 */
+export interface ChunkMeta {
+  page?: number | null
+  headingPath?: string
+}
+
+export interface ChunkInfo {
+  id: string
+  documentId: string
+  chunkIndex: number
+  content: string
+  tokenCount: number | null
+  meta: ChunkMeta
+  /** 查询场景下联表带出的所属文档名 */
+  docName?: string
+}
+
+/** 检索命中片段（retriever 输出，拼 prompt 与 citation 事件共用） */
+export interface RetrievedChunk extends ChunkInfo {
+  /** 相似度距离（cosine，越小越相似；仅调试/排序展示用） */
+  distance: number
 }

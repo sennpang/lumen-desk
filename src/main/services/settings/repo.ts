@@ -21,6 +21,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Ollama 默认本机端口；用 127.0.0.1 比 localhost 更稳（跳过 DNS 解析差异，断网也可达）
   ollamaUrl: 'http://127.0.0.1:11434',
   ollamaModel: '',
+  // embedding 默认走 Ollama：导入文档这条链路也能完全离线（PRD local-first）
+  embeddingProvider: 'ollama',
+  // nomic-embed-text 是 Ollama 官方文档推荐的通用嵌入模型（768 维，约 274MB）
+  ollamaEmbedModel: 'nomic-embed-text',
+  // 云端 embedding 需用户在设置里填：要求其 OpenAI 兼容网关同时提供
+  // /v1/embeddings（DeepSeek 本身没有 embedding 接口，可选硅基流动/智谱/OpenAI）
+  cloudEmbedModel: '',
   temperature: 0.7,
   systemPrompt: '你是 Lumen Desk，一个严谨、简洁的 AI 助手。',
   // 上下文保护阈值（估算 token）；超过则压缩早期对话（F-A2）
