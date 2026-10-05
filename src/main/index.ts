@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { ensureDataDirs } from './paths'
+import { initDb, closeDb } from './db/sqlite'
 import { registerIpcHandlers } from './ipc'
 
 /**
@@ -58,6 +59,7 @@ function createWindow(): void {
 // Electron 就绪后才能创建窗口 / 访问 userData
 app.whenReady().then(() => {
   ensureDataDirs()
+  initDb()
   registerIpcHandlers()
   createWindow()
 
@@ -70,4 +72,9 @@ app.whenReady().then(() => {
 // 非 macOS 平台：所有窗口关闭后退出应用
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// 退出前关闭数据库连接（WAL 模式下顺带做 checkpoint，避免残留 -wal 膨胀）
+app.on('before-quit', () => {
+  closeDb()
 })
