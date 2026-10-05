@@ -1,5 +1,7 @@
 import { app, ipcMain } from 'electron'
 import { registerConversationHandlers } from './conversation'
+import { registerChatHandlers } from './chat'
+import { registerSettingsHandlers } from './settings'
 
 /**
  * IPC 处理器注册中心（PRD 第 13 章：IPC 接口规范）
@@ -14,6 +16,8 @@ import { registerConversationHandlers } from './conversation'
 export function registerIpcHandlers(): void {
   // 各命名空间处理器
   registerConversationHandlers()
+  registerChatHandlers()
+  registerSettingsHandlers()
 
   // M0 健康检查：验证渲染进程 -> 主进程的 invoke 链路已打通
   ipcMain.handle('app:ping', () => {
