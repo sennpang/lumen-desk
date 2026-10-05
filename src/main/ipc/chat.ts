@@ -14,7 +14,8 @@ import { streamChatCompletion } from '../services/llm/client'
 import { compactIfNeeded, estimateTokens } from '../services/llm/context'
 import { resolveModelConfig } from '../services/llm/resolve'
 import { buildRagSystemPrompt, retrieve, snippetOf } from '../services/rag/retriever'
-import type { CitationRef } from '../../shared/types'
+import { runAgent } from '../services/agent/runner'
+import type { AgentStepInfo, CitationRef } from '../../shared/types'
 import type { RunPayload, StreamEvent } from '../../shared/protocol'
 
 /**
@@ -31,6 +32,18 @@ interface ActiveRun {
 }
 
 const activeRuns = new Map<string, ActiveRun>()
+
+/**
+ * M5：等待用户审批的副作用工具调用。
+ * runner 在 onConfirm 处 await 一个 Promise，审批结果由
+ * chat:confirm-resolve 唤醒；停止生成时同一批 resolve(false)，
+ * 避免挂起的 Promise 泄漏（随后 abort 让下一轮请求抛 AbortError）。
+ */
+interface PendingConfirm {
+  resolve: (approved: boolean) => void
+  streamId: string
+}
+const pendingConfirms = new Map<string, PendingConfirm>()
 
 function emit(target: WebContents, event: StreamEvent): void {
   target.send('chat:event', event)
@@ -125,37 +138,84 @@ async function executeRun(
     systemContent = buildRagSystemPrompt(systemContent, retrieved)
   }
 
-  const messages = systemContent
-    ? [{ role: 'system' as const, content: systemContent }, ...history]
-    : history
-
-  // 5. 流式请求
+  // 5. 控制器注册（chat/rag/agent 共用停止入口）
   const controller = new AbortController()
   activeRuns.set(streamId, { controller })
 
   let answer = ''
   let promptTokens = 0
   let completionTokens = 0
-  try {
-    const gen = streamChatCompletion({
-      baseUrl: modelConfig.baseUrl,
-      apiKey: modelConfig.apiKey,
-      model: modelConfig.model,
-      temperature: settings.temperature,
-      messages,
-      signal: controller.signal
+
+  const emitStep = (step: AgentStepInfo): void => {
+    emit(target, {
+      type: 'agent_step',
+      streamId,
+      seq: step.seq,
+      stepId: step.id,
+      stepType: step.stepType,
+      toolName: step.toolName,
+      args: step.args,
+      result: step.result,
+      confirmStatus: step.confirmStatus
     })
-    while (true) {
-      const { value, done } = await gen.next()
-      if (done) {
-        // done 分支 value 类型被 TS 收窄为生成器返回值 StreamResult
-        answer = value.content || answer
-        promptTokens = value.promptTokens
-        completionTokens = value.completionTokens
-        break
+  }
+
+  try {
+    if (payload.mode === 'agent') {
+      // ---- Agent 模式：ReAct 多轮工具循环（system 规则由 runner 在人设上追加）----
+      const result = await runAgent(payload.message, history, {
+        modelConfig: {
+          baseUrl: modelConfig.baseUrl,
+          apiKey: modelConfig.apiKey,
+          model: modelConfig.model
+        },
+        temperature: settings.temperature,
+        systemPrompt: settings.systemPrompt,
+        messageId: assistantMsg.id,
+        kbId: payload.kbId,
+        embedding: { settings, cloudApiKey },
+        signal: controller.signal,
+        onAnswer: (text) => {
+          // 最终轮一次性出文（工具轮的思考不进气泡）
+          answer = text
+          emit(target, { type: 'token', streamId, delta: text })
+        },
+        onStep: emitStep,
+        onConfirm: (req) =>
+          new Promise<boolean>((resolve) => {
+            // runner 在此挂起，直到 chat:confirm-resolve 或 chat:stop 唤醒
+            pendingConfirms.set(req.confirmId, { resolve, streamId })
+            emit(target, { type: 'confirm_required', streamId, ...req })
+          })
+      })
+      answer = result.content
+      promptTokens = result.promptTokens
+      completionTokens = result.completionTokens
+    } else {
+      // ---- chat / rag 模式：M1-M4 的单轮流式（rag 已在上方把资料注入 system）----
+      const messages = systemContent
+        ? [{ role: 'system' as const, content: systemContent }, ...history]
+        : history
+      const gen = streamChatCompletion({
+        baseUrl: modelConfig.baseUrl,
+        apiKey: modelConfig.apiKey,
+        model: modelConfig.model,
+        temperature: settings.temperature,
+        messages,
+        signal: controller.signal
+      })
+      while (true) {
+        const { value, done } = await gen.next()
+        if (done) {
+          // done 分支 value 类型被 TS 收窄为生成器返回值 StreamResult
+          answer = value.content || answer
+          promptTokens = value.promptTokens
+          completionTokens = value.completionTokens
+          break
+        }
+        answer += value
+        emit(target, { type: 'token', streamId, delta: value })
       }
-      answer += value
-      emit(target, { type: 'token', streamId, delta: value })
     }
 
     // 6. 收尾落库（用完整文本回写，比逐 token UPDATE 高效得多）
@@ -193,6 +253,13 @@ async function executeRun(
     fail(e instanceof Error ? e.message : String(e))
   } finally {
     activeRuns.delete(streamId)
+    // 兜底清理本流残留的审批挂起（正常路径审批在循环内已被消费）
+    for (const [id, pc] of pendingConfirms) {
+      if (pc.streamId === streamId) {
+        pc.resolve(false)
+        pendingConfirms.delete(id)
+      }
+    }
   }
 }
 
@@ -206,6 +273,25 @@ export function registerChatHandlers(): void {
   })
 
   ipcMain.handle('chat:stop', (_event, streamId: string) => {
+    // 先放行该流上挂起的审批（按拒绝处理），再中断网络请求；
+    // 否则 runner 会永远 await 在 onConfirm 上，abort 也碰不到它
+    for (const [id, pc] of pendingConfirms) {
+      if (pc.streamId === streamId) {
+        pc.resolve(false)
+        pendingConfirms.delete(id)
+      }
+    }
     activeRuns.get(streamId)?.controller.abort()
   })
+
+  // M5：用户对副作用工具确认卡片的审批结果
+  ipcMain.handle(
+    'chat:confirm-resolve',
+    (_event, payload: { confirmId: string; approved: boolean }) => {
+      const pending = pendingConfirms.get(payload.confirmId)
+      if (!pending) return // 已超时/随停止清理：忽略重复点击
+      pendingConfirms.delete(payload.confirmId)
+      pending.resolve(payload.approved)
+    }
+  )
 }

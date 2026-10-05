@@ -30,6 +30,9 @@ const api = {
     /** 停止生成（F-A1）：主进程中断对应 fetch，已生成内容保留 */
     stop: (streamId: string): Promise<void> =>
       ipcRenderer.invoke('chat:stop', streamId),
+    /** M5：审批副作用工具（打开链接/保存文件）；approved=false 视为拒绝 */
+    resolveConfirm: (confirmId: string, approved: boolean): Promise<void> =>
+      ipcRenderer.invoke('chat:confirm-resolve', { confirmId, approved }),
     /**
      * 订阅统一流式事件（PRD 13.2）。
      * 返回取消订阅函数——React useEffect 清理时必须调用，
