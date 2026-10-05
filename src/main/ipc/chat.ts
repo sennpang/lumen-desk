@@ -14,6 +14,7 @@ import { streamChatCompletion } from '../services/llm/client'
 import { compactIfNeeded, estimateTokens } from '../services/llm/context'
 import { resolveModelConfig } from '../services/llm/resolve'
 import { buildRagSystemPrompt, retrieve, snippetOf } from '../services/rag/retriever'
+import type { CitationRef } from '../../shared/types'
 import type { RunPayload, StreamEvent } from '../../shared/protocol'
 
 /**
@@ -94,6 +95,8 @@ async function executeRun(
   // 4.5 RAG 模式：先检索知识库，引用资料注入 system，并按序发 citation 事件
   // 编号 [1..n] 同时用于：注入资料的序号、模型回答中的角标、渲染端引用卡片
   let systemContent = settings.systemPrompt.trim()
+  // 本轮引用，随 assistant 消息持久化（历史会话也能回看来源）
+  const citations: CitationRef[] = []
   if (payload.mode === 'rag') {
     if (!payload.kbId) {
       fail('缺少知识库信息，无法进行知识库问答。')
@@ -110,14 +113,14 @@ async function executeRun(
       return
     }
     for (const chunk of retrieved) {
-      emit(target, {
-        type: 'citation',
-        streamId,
+      const ref: CitationRef = {
         chunkId: chunk.id,
         docName: chunk.docName ?? '未命名文档',
         snippet: snippetOf(chunk.content),
         page: typeof chunk.meta.page === 'number' ? chunk.meta.page : null
-      })
+      }
+      citations.push(ref)
+      emit(target, { type: 'citation', streamId, ...ref })
     }
     systemContent = buildRagSystemPrompt(systemContent, retrieved)
   }
@@ -159,7 +162,8 @@ async function executeRun(
     updateMessage(assistantMsg.id, {
       content: answer,
       status: 'done',
-      tokens: completionTokens || estimateTokens(answer)
+      tokens: completionTokens || estimateTokens(answer),
+      citations
     })
     touchConversation(conversationId, modelConfig.model)
     emit(target, {
@@ -175,14 +179,17 @@ async function executeRun(
       updateMessage(assistantMsg.id, {
         content: partial || '（已停止生成）',
         status: 'done',
-        tokens: estimateTokens(partial)
+        tokens: estimateTokens(partial),
+        citations
       })
       touchConversation(conversationId)
       emit(target, { type: 'done', streamId, usage: null })
       return
     }
     // 真错误：保留片段并标记 error，错误事件驱动 UI 提示
-    if (answer.trim()) updateMessage(assistantMsg.id, { content: answer })
+    if (answer.trim()) {
+      updateMessage(assistantMsg.id, { content: answer, citations })
+    }
     fail(e instanceof Error ? e.message : String(e))
   } finally {
     activeRuns.delete(streamId)

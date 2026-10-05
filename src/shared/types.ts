@@ -24,6 +24,14 @@ export interface ConversationInfo {
   modelId: string | null
 }
 
+/** RAG 引用（一条被注入并展示的来源片段；持久化在 assistant 消息上） */
+export interface CitationRef {
+  chunkId: string
+  docName: string
+  snippet: string
+  page: number | null
+}
+
 /** 消息记录（message 表一行） */
 export interface MessageRecord {
   id: string
@@ -34,6 +42,8 @@ export interface MessageRecord {
   tokens: number | null
   createdAt: number
   seq: number
+  /** RAG 回答携带的引用来源（mode=rag 的 assistant 消息） */
+  citations?: CitationRef[]
 }
 
 /** 发给 LLM 的对话消息（多轮上下文的基本单位） */

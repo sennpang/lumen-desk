@@ -60,6 +60,8 @@ function runMigrations(conn: DatabaseType): void {
 
   // M3：document 记录解析失败原因（F-C1）
   addColumnIfMissing('document', 'error', 'error TEXT')
+  // M3：message 附加信息（RAG citations 随回答持久化，历史会话可回溯来源）
+  addColumnIfMissing('message', 'meta', 'meta TEXT')
 }
 
 export function closeDb(): void {

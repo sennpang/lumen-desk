@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { getDb } from '../../db/sqlite'
 import type {
   ChatMode,
+  CitationRef,
   ConversationInfo,
   ChatMessage,
   MessageRecord,
@@ -35,6 +36,7 @@ interface MessageRow {
   tokens: number | null
   created_at: number
   seq: number
+  meta: string | null
 }
 
 function toConversationInfo(r: ConversationRow): ConversationInfo {
@@ -49,7 +51,7 @@ function toConversationInfo(r: ConversationRow): ConversationInfo {
 }
 
 function toMessageRecord(r: MessageRow): MessageRecord {
-  return {
+  const record: MessageRecord = {
     id: r.id,
     conversationId: r.conversation_id,
     role: r.role as MessageRole,
@@ -59,6 +61,16 @@ function toMessageRecord(r: MessageRow): MessageRecord {
     createdAt: r.created_at,
     seq: r.seq
   }
+  // meta 目前只装 citations；未来扩展继续往这个 JSON 里加字段
+  if (r.meta) {
+    try {
+      const parsed = JSON.parse(r.meta) as { citations?: CitationRef[] }
+      if (Array.isArray(parsed.citations)) record.citations = parsed.citations
+    } catch {
+      // 损坏的 meta 不应影响消息读取
+    }
+  }
+  return record
 }
 
 export function createConversation(mode: ChatMode, modelId: string | null): ConversationInfo {
@@ -136,6 +148,7 @@ export interface AddMessageInput {
   content: string
   status?: MessageStatus
   tokens?: number | null
+  citations?: CitationRef[]
 }
 
 export function addMessage(input: AddMessageInput): MessageRecord {
@@ -148,15 +161,16 @@ export function addMessage(input: AddMessageInput): MessageRecord {
     status: input.status ?? 'done',
     tokens: input.tokens ?? null,
     createdAt: Date.now(),
-    seq: 0 // 下方事务内赋值
+    seq: 0, // 下方事务内赋值
+    citations: input.citations
   }
 
   // 事务保证"取最大序号 + 插入"原子，并发写入也不会撞 UNIQUE(conversation_id, seq)
   const tx = db.transaction(() => {
     record.seq = nextSeq(input.conversationId)
     db.prepare(
-      `INSERT INTO message(id, conversation_id, role, content, status, tokens, created_at, seq)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO message(id, conversation_id, role, content, status, tokens, created_at, seq, meta)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       record.id,
       record.conversationId,
@@ -165,7 +179,8 @@ export function addMessage(input: AddMessageInput): MessageRecord {
       record.status,
       record.tokens,
       record.createdAt,
-      record.seq
+      record.seq,
+      input.citations ? JSON.stringify({ citations: input.citations }) : null
     )
   })
   tx()
@@ -174,7 +189,12 @@ export function addMessage(input: AddMessageInput): MessageRecord {
 
 export function updateMessage(
   id: string,
-  patch: { content?: string; status?: MessageStatus; tokens?: number | null }
+  patch: {
+    content?: string
+    status?: MessageStatus
+    tokens?: number | null
+    citations?: CitationRef[]
+  }
 ): void {
   const fields: string[] = []
   const values: unknown[] = []
@@ -189,6 +209,10 @@ export function updateMessage(
   if (patch.tokens !== undefined) {
     fields.push('tokens = ?')
     values.push(patch.tokens)
+  }
+  if (patch.citations !== undefined) {
+    fields.push('meta = ?')
+    values.push(JSON.stringify({ citations: patch.citations }))
   }
   if (fields.length === 0) return
   values.push(id)

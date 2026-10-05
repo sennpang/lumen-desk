@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS message (
   tokens          INTEGER,
   created_at      INTEGER NOT NULL,
   seq             INTEGER NOT NULL,       -- 会话内顺序
+  meta            TEXT,                   -- JSON：M3 存 RAG citations 等附加信息
   UNIQUE (conversation_id, seq)
 );
 
