@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS document (
   file_hash   TEXT,                       -- 去重/变更检测
   status      TEXT NOT NULL,              -- parsing | ready | failed
   chunk_count INTEGER NOT NULL DEFAULT 0,
+  error       TEXT,                       -- 解析/索引失败原因（M3 新增，老库走 ALTER 迁移）
   created_at  INTEGER NOT NULL
 );
 

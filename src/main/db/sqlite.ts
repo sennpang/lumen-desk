@@ -33,7 +33,33 @@ export function initDb(): DatabaseType {
   // 建表（IF NOT EXISTS，幂等，每次启动执行安全）
   conn.exec(schemaSql)
 
+  // 增量迁移（schema.sql 的 CREATE 只影响新库；已存在的表不会被改动）
+  runMigrations(conn)
+
   return conn
+}
+
+/**
+ * 轻量迁移机制：SQLite 的 ALTER TABLE 不支持 ADD COLUMN IF NOT EXISTS，
+ * 所以先查 pragma table_info，缺列才补。每个迁移写成幂等语句，
+ * 老用户升级应用、新用户全新建库，走的都是同一条路径。
+ */
+function runMigrations(conn: DatabaseType): void {
+  const addColumnIfMissing = (
+    table: string,
+    column: string,
+    ddl: string
+  ): void => {
+    const cols = conn.prepare(`PRAGMA table_info(${table})`).all() as {
+      name: string
+    }[]
+    if (!cols.some((c) => c.name === column)) {
+      conn.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`)
+    }
+  }
+
+  // M3：document 记录解析失败原因（F-C1）
+  addColumnIfMissing('document', 'error', 'error TEXT')
 }
 
 export function closeDb(): void {
