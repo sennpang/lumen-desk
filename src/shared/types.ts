@@ -1,0 +1,71 @@
+/**
+ * 领域模型与跨进程共享类型（PRD 第 12 章数据模型 / 第 13 章接口）
+ *
+ * 这个文件同时被主进程和渲染进程引用：
+ * - 主进程用它约束落库/出参
+ * - 渲染进程通过 preload 的 window.api 拿到的就是这些类型
+ * 纯类型文件，编译后不产生任何运行时代码，不破坏双进程隔离。
+ */
+
+/** 会话模式（PRD：conversation.mode） */
+export type ChatMode = 'chat' | 'rag' | 'agent'
+
+export type MessageRole = 'user' | 'assistant' | 'tool' | 'system'
+
+export type MessageStatus = 'streaming' | 'done' | 'error'
+
+/** 会话列表项 */
+export interface ConversationInfo {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+  mode: ChatMode
+  modelId: string | null
+}
+
+/** 消息记录（message 表一行） */
+export interface MessageRecord {
+  id: string
+  conversationId: string
+  role: MessageRole
+  content: string
+  status: MessageStatus
+  tokens: number | null
+  createdAt: number
+  seq: number
+}
+
+/** 发给 LLM 的对话消息（多轮上下文的基本单位） */
+export interface ChatMessage {
+  role: MessageRole
+  content: string
+  /** tool 角色消息携带的工具名（M5 使用，M1 占位） */
+  name?: string
+}
+
+/** 模型来源 */
+export type ModelProvider = 'cloud' | 'local'
+
+/** 非密设置（app_setting 表） */
+export interface AppSettings {
+  provider: ModelProvider
+  /** OpenAI 兼容网关地址，默认 DeepSeek */
+  baseUrl: string
+  model: string
+  /** 生成参数（F-B3） */
+  temperature: number
+  systemPrompt: string
+  /** 上下文窗口上限（tokens 估算值），超出触发压缩 */
+  maxContextTokens: number
+}
+
+/** 渲染端能看到的设置视图：API Key 永不下发明文，只告知是否已配置 */
+export interface SettingsView extends AppSettings {
+  hasApiKey: boolean
+}
+
+/** 保存设置入参：apiKey 为可选——留空表示沿用已存密钥，填了才覆盖 */
+export interface SaveSettingsInput extends AppSettings {
+  apiKey?: string
+}

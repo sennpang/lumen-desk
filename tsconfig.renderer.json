@@ -8,6 +8,7 @@
   "include": [
     "src/renderer/**/*.ts",
     "src/renderer/**/*.tsx",
-    "src/preload/index.d.ts"
+    "src/preload/index.d.ts",
+    "src/shared/**/*.ts"
   ]
 }
