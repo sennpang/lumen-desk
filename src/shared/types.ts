@@ -32,6 +32,16 @@ export interface CitationRef {
   page: number | null
 }
 
+// ---------------- Agent（M5） ----------------
+
+/** 模型发起的一次工具调用（OpenAI tools 协议：参数是原始 JSON 字符串） */
+export interface ToolCall {
+  id: string
+  name: string
+  /** 模型生成的参数 JSON 文本（执行前解析，解析失败作为 observation 回灌） */
+  arguments: string
+}
+
 /** 消息记录（message 表一行） */
 export interface MessageRecord {
   id: string
@@ -44,6 +54,8 @@ export interface MessageRecord {
   seq: number
   /** RAG 回答携带的引用来源（mode=rag 的 assistant 消息） */
   citations?: CitationRef[]
+  /** Agent 回答的步骤时间线（mode=agent 的 assistant 消息） */
+  agentSteps?: AgentStepInfo[]
 }
 
 /** 发给 LLM 的对话消息（多轮上下文的基本单位） */
@@ -52,6 +64,32 @@ export interface ChatMessage {
   content: string
   /** tool 角色消息携带的工具名（M5 使用，M1 占位） */
   name?: string
+  /** role='tool' 时：对应 assistant tool_calls 里的 id */
+  toolCallId?: string
+  /** role='assistant' 且模型决定调工具时携带；与 content 可同时为空或有思考文本 */
+  toolCalls?: ToolCall[]
+}
+
+export type AgentStepType = 'thought' | 'tool_call' | 'observation'
+
+/** 需确认工具的审批状态（只对 requiresConfirm 的工具调用存在） */
+export type ConfirmStatus = 'waiting' | 'approved' | 'denied'
+
+/** Agent 单步（agent_step 表一行 / 时间线 UI 的一个节点） */
+export interface AgentStepInfo {
+  id: string
+  messageId: string
+  /** 一条 assistant 消息内的步骤顺序（0 起） */
+  seq: number
+  stepType: AgentStepType
+  toolName?: string
+  args?: unknown
+  /** observation 的结果摘要/文本；thought 的思考文本也放这里 */
+  result?: string
+  /** 等待用户确认时对应 confirm_required 事件的 id */
+  confirmId?: string
+  confirmStatus?: ConfirmStatus
+  createdAt: number
 }
 
 /** 模型来源 */

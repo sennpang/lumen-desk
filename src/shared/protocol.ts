@@ -42,15 +42,23 @@ export type StreamEvent =
   | {
       type: 'agent_step'
       streamId: string
+      /** 步骤在本次回答内的序号（0 起），也是渲染端去重/排序键 */
+      seq: number
+      /** agent_step 表行 id（切换会话后 hydrate 用它对齐） */
+      stepId: string
       stepType: 'thought' | 'tool_call' | 'observation'
       toolName?: string
       args?: unknown
       result?: string
+      /** tool_call 步骤的审批状态；仅需确认工具出现 */
+      confirmStatus?: 'waiting' | 'approved' | 'denied'
     }
   | {
       type: 'confirm_required'
       streamId: string
       confirmId: string
+      /** 对应 agent_step(tool_call) 的行 id，确认卡片挂到该时间线节点 */
+      stepId: string
       toolName: string
       args: unknown
       preview: string
