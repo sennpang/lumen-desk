@@ -55,3 +55,53 @@ export function resolveModelConfig(
     }
   }
 }
+
+/**
+ * embedding 服务配置解析（M3）。
+ *
+ * 与对话模型刻意解耦：embeddingProvider 独立选择。
+ * - ollama：走 {ollamaUrl}/v1/embeddings（OpenAI 兼容形态）
+ * - cloud：复用对话网关地址与 Key，但模型名单独配置——
+ *   DeepSeek 本身不提供 embedding 接口，用户需改用同时提供
+ *   /v1/embeddings 的网关（硅基流动/智谱/OpenAI 等）
+ */
+export function resolveEmbeddingConfig(
+  settings: AppSettings,
+  cloudApiKey: string | null
+): ResolveResult {
+  if (settings.embeddingProvider === 'ollama') {
+    if (!settings.ollamaEmbedModel.trim()) {
+      return {
+        ok: false,
+        message: '尚未填写本地 embedding 模型（如 nomic-embed-text），请在「设置」中配置。'
+      }
+    }
+    return {
+      ok: true,
+      config: {
+        baseUrl: settings.ollamaUrl,
+        apiKey: 'ollama',
+        model: settings.ollamaEmbedModel.trim()
+      }
+    }
+  }
+
+  if (!cloudApiKey) {
+    return { ok: false, message: '云端向量化需要 API Key，请先在「设置」中填写并保存。' }
+  }
+  if (!settings.cloudEmbedModel.trim()) {
+    return {
+      ok: false,
+      message:
+        '尚未填写云端 embedding 模型名（如 text-embedding-3-small、bge-large-zh-v1.5），请在「设置」中配置。'
+    }
+  }
+  return {
+    ok: true,
+    config: {
+      baseUrl: settings.baseUrl,
+      apiKey: cloudApiKey,
+      model: settings.cloudEmbedModel.trim()
+    }
+  }
+}
