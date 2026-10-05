@@ -31,6 +31,14 @@ function createWindow(): void {
   // 页面加载完成后再显示窗口
   win.on('ready-to-show', () => win.show())
 
+  // 把渲染进程的 console 输出转发到主进程终端
+  // （渲染进程没有终端窗口，不转发则页面里的 console.log 无处可看；
+  //   后续调试流式事件、Agent 时间线都依赖这条日志通道）
+  win.webContents.on('console-message', (_event, level, message) => {
+    const prefix = level === 3 ? '[renderer:error]' : '[renderer]'
+    console.log(`${prefix} ${message}`)
+  })
+
   // 外部链接一律交给系统浏览器，绝不在应用内打开第三方页面
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
