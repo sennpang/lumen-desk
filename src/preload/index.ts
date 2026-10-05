@@ -1,8 +1,11 @@
-import { contextBridge, ipcRenderer } from 'electron'
-import type { RunPayload, StreamEvent } from '../shared/protocol'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { KbEvent, RunPayload, StreamEvent } from '../shared/protocol'
 import type {
   ChatMode,
+  ChunkInfo,
   ConversationInfo,
+  DocumentInfo,
+  KnowledgeBaseInfo,
   MessageRecord,
   OllamaModelInfo,
   OllamaStatus,
@@ -66,6 +69,49 @@ const api = {
     status: (): Promise<OllamaStatus> => ipcRenderer.invoke('ollama:status'),
     /** 列出已安装模型；服务不可达时 reject */
     models: (): Promise<OllamaModelInfo[]> => ipcRenderer.invoke('ollama:models')
+  },
+
+  knowledge: {
+    listKbs: (): Promise<KnowledgeBaseInfo[]> => ipcRenderer.invoke('kb:list'),
+    ensureDefaultKb: (): Promise<KnowledgeBaseInfo> =>
+      ipcRenderer.invoke('kb:ensure-default'),
+    createKb: (name: string): Promise<KnowledgeBaseInfo> =>
+      ipcRenderer.invoke('kb:create', name),
+    listDocs: (kbId: string): Promise<DocumentInfo[]> =>
+      ipcRenderer.invoke('kb:docs', kbId),
+    /** 文档片段预览（点击文档查看切分结果，上限 500 条） */
+    listChunks: (docId: string): Promise<ChunkInfo[]> =>
+      ipcRenderer.invoke('kb:chunks', docId),
+    /** 引用点击：取单个片段原文 */
+    getChunk: (chunkId: string): Promise<ChunkInfo | null> =>
+      ipcRenderer.invoke('kb:chunk', chunkId),
+    /** 导入本地文件（后台处理，过程经 onKbEvent 推送） */
+    importFiles: (kbId: string, filePaths: string[]): Promise<{ queued: boolean }> =>
+      ipcRenderer.invoke('kb:import', kbId, filePaths),
+    /** 重建向量索引（换 embedding 模型后使用，await 到完成） */
+    reindex: (
+      kbId: string
+    ): Promise<{ docCount: number; chunkCount: number }> =>
+      ipcRenderer.invoke('kb:reindex', kbId),
+    removeDoc: (docId: string): Promise<void> =>
+      ipcRenderer.invoke('kb:remove-doc', docId),
+    /** 订阅导入生命周期事件；返回取消订阅函数 */
+    onKbEvent: (cb: (e: KbEvent) => void): (() => void) => {
+      const listener = (_event: unknown, ev: KbEvent) => cb(ev)
+      ipcRenderer.on('kb:event', listener)
+      return () => ipcRenderer.removeListener('kb:event', listener)
+    }
+  },
+
+  dialog: {
+    /** 系统文件选择框（多选），取消时返回空数组 */
+    pickFiles: (): Promise<string[]> => ipcRenderer.invoke('dialog:pickFiles'),
+    /**
+     * 拖拽文件解析真实磁盘路径。
+     * 渲染端 File 对象在安全模型下没有 path 属性（Electron 已移除），
+     * 必须在 preload 里经 webUtils 解析；主进程只信任这里出来的路径。
+     */
+    getPathForFile: (file: File): string => webUtils.getPathForFile(file)
   }
 }
 
