@@ -195,6 +195,73 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             />
           )}
 
+          {/* Embedding 配置（M3 RAG 向量化用，与对话模型独立选择） */}
+          <div className="rounded-lg border border-line p-3">
+            <label className={labelCls}>知识库向量模型（Embedding）</label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setForm((f) => ({ ...f, embeddingProvider: 'ollama' }))}
+                className={`flex-1 rounded-lg border px-3 py-1.5 text-xs ${
+                  form.embeddingProvider === 'ollama'
+                    ? 'border-brand bg-brand-bg text-brand-dark'
+                    : 'border-line text-ink2'
+                }`}
+              >
+                本地 Ollama
+              </button>
+              <button
+                onClick={() => setForm((f) => ({ ...f, embeddingProvider: 'cloud' }))}
+                className={`flex-1 rounded-lg border px-3 py-1.5 text-xs ${
+                  form.embeddingProvider === 'cloud'
+                    ? 'border-brand bg-brand-bg text-brand-dark'
+                    : 'border-line text-ink2'
+                }`}
+              >
+                云端 Embeddings
+              </button>
+            </div>
+
+            <div className="mt-2">
+              {form.embeddingProvider === 'ollama' ? (
+                <>
+                  <input
+                    className={fieldCls}
+                    value={form.ollamaEmbedModel}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, ollamaEmbedModel: e.target.value }))
+                    }
+                    placeholder="nomic-embed-text"
+                  />
+                  <p className="mt-1 text-xs text-ink2">
+                    推荐 nomic-embed-text（本地离线、中英文效果均衡）。未安装时终端执行
+                    <code className="mx-1 rounded bg-paper px-1 py-0.5">
+                      ollama pull nomic-embed-text
+                    </code>
+                    。
+                  </p>
+                </>
+              ) : (
+                <>
+                  <input
+                    className={fieldCls}
+                    value={form.cloudEmbedModel}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, cloudEmbedModel: e.target.value }))
+                    }
+                    placeholder="text-embedding-3-small"
+                  />
+                  <p className="mt-1 text-xs text-ink2">
+                    走上方云端 Base/Key（OpenAI 兼容 /embeddings 接口）。注意：DeepSeek
+                    目前不提供 embedding 接口，需要换用支持 embeddings 的服务商。
+                  </p>
+                </>
+              )}
+              <p className="mt-1 text-xs text-amber-700">
+                ⚠ 更换向量模型后维度会变化，请在知识库页点「重建索引」，旧向量无法跨模型混用。
+              </p>
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className={labelCls}>temperature：{form.temperature.toFixed(2)}</label>
