@@ -1,58 +1,38 @@
 import { useEffect, useState } from 'react'
+import { Sidebar } from './app/components/Sidebar'
+import { ChatView } from './app/components/ChatView'
+import { SettingsModal } from './app/components/SettingsModal'
+import { api } from './app/lib/ipc'
+import { useChat } from './app/stores/useChat'
+import { useConversations } from './app/stores/useConversations'
+import { useSettings } from './app/stores/useSettings'
 
 /**
- * M0 验收页面：验证"渲染进程 -> preload 桥 -> 主进程"的 IPC 链路。
+ * 应用外壳（PRD 5.1：边栏导航 + 主对话区 + 抽屉式管理页）
  *
- * 对应 PRD 里程碑 M0（W1）：桌面窗口 + IPC hello。
- * 页面加载后调用 window.api.ping()，主进程返回版本/平台信息，
- * 证明双进程通信已经跑通，后续所有功能（流式对话/知识库/Agent）都建立在此之上。
+ * 这里做三件"全局只做一次"的事：
+ * 1. 订阅 chat:event 统一流式事件 -> useChat.handleEvent（返回清理函数）
+ * 2. 加载设置（顶栏模型标识依赖它）
+ * 3. 加载会话列表
  */
-interface Pong {
-  pong: boolean
-  version: string
-  platform: string
-  time: number
-}
-
 export function App() {
-  const [pong, setPong] = useState<Pong | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const refreshList = useConversations((s) => s.refreshList)
 
   useEffect(() => {
-    window.api
-      .ping()
-      .then((res) => {
-        console.log('[M0] app:ping 返回：', JSON.stringify(res))
-        setPong(res)
-      })
-      .catch((e: unknown) => {
-        console.error('[M0] app:ping 失败：', e)
-        setError(String(e))
-      })
-  }, [])
+    const unsubscribe = api.chat.onEvent((ev) => {
+      void useChat.getState().handleEvent(ev)
+    })
+    void useSettings.getState().load()
+    void refreshList()
+    return unsubscribe
+  }, [refreshList])
 
   return (
-    <main className="m0">
-      <h1>Lumen Desk</h1>
-      <p className="subtitle">本地知识库 AI 桌面助手 · M0 骨架</p>
-
-      <section className="probe">
-        {error && <p className="error">IPC 调用失败：{error}</p>}
-        {!pong && !error && <p>正在通过 IPC 询问主进程…</p>}
-        {pong && (
-          <>
-            <p className="ok">✓ IPC 链路已打通（app:ping → pong）</p>
-            <dl>
-              <dt>应用版本</dt>
-              <dd>{pong.version}</dd>
-              <dt>平台</dt>
-              <dd>{pong.platform}</dd>
-              <dt>主进程时间戳</dt>
-              <dd>{pong.time}</dd>
-            </dl>
-          </>
-        )}
-      </section>
-    </main>
+    <div className="flex h-full bg-paper text-ink">
+      <Sidebar onOpenSettings={() => setSettingsOpen(true)} />
+      <ChatView />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+    </div>
   )
 }
