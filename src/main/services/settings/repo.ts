@@ -1,6 +1,6 @@
-import { getDb } from '../db/sqlite'
-import { hasCloudApiKey } from '../store/secrets'
-import type { AppSettings, ModelProvider, SettingsView } from '../../shared/types'
+import { getDb } from '../../db/sqlite'
+import { hasCloudApiKey } from '../../store/secrets'
+import type { AppSettings, ModelProvider, SettingsView } from '../../../shared/types'
 
 /**
  * 设置仓储：非密配置存 app_setting 表（单行 key-value），

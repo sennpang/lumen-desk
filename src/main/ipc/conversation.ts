@@ -4,10 +4,10 @@ import {
   deleteConversation,
   getConversation,
   listConversations,
+  listMessages,
   renameConversation
-} from '../../services/conversations/repo'
-import { listMessages } from '../../services/conversations/repo'
-import type { ChatMode } from '../../../shared/types'
+} from '../services/conversations/repo'
+import type { ChatMode } from '../../shared/types'
 
 /**
  * 会话管理 IPC（F-A3：新建/重命名/删除/切换，列表按更新时间排序）

@@ -35,7 +35,7 @@ function endpoint(baseUrl: string): string {
     : `${trimmed}/v1/chat/completions`
 }
 
-async function postChat(body: unknown, opts: StreamOptions, stream: boolean) {
+async function postChat(body: unknown, opts: StreamOptions) {
   const res = await fetch(endpoint(opts.baseUrl), {
     method: 'POST',
     headers: {
@@ -72,8 +72,7 @@ export async function* streamChatCompletion(
       // 让 SSE 最后一帧带 usage（OpenAI/DeepSeek 均支持）
       stream_options: { include_usage: true }
     },
-    opts,
-    true
+    opts
   )
 
   const reader = res.body!.getReader()
@@ -131,7 +130,6 @@ export async function testConnection(opts: Omit<StreamOptions, 'messages' | 'tem
       max_tokens: 1,
       stream: false
     },
-    { ...opts, temperature: 0, messages: [] },
-    false
+    { ...opts, temperature: 0, messages: [] }
   )
 }
