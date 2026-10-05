@@ -30,15 +30,18 @@ CREATE TABLE IF NOT EXISTS message (
 
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON message(conversation_id, seq);
 
--- Agent 步骤（M5 时间线与重放使用，M1 先建表）
+-- Agent 步骤（M5 时间线与重放使用，M1 先建表，M5 补 seq/确认状态列）
 CREATE TABLE IF NOT EXISTS agent_step (
-  id          TEXT PRIMARY KEY,
-  message_id  TEXT NOT NULL REFERENCES message(id) ON DELETE CASCADE,
-  step_type   TEXT NOT NULL,              -- thought | tool_call | observation
-  tool_name   TEXT,
-  args        TEXT,                       -- JSON
-  result      TEXT,
-  created_at  INTEGER NOT NULL
+  id             TEXT PRIMARY KEY,
+  message_id     TEXT NOT NULL REFERENCES message(id) ON DELETE CASCADE,
+  seq            INTEGER NOT NULL DEFAULT 0, -- 该消息内步骤顺序（0 起）
+  step_type      TEXT NOT NULL,              -- thought | tool_call | observation
+  tool_name      TEXT,
+  args           TEXT,                       -- JSON
+  result         TEXT,
+  confirm_id     TEXT,                       -- 需确认工具的审批会话 id
+  confirm_status TEXT,                       -- waiting | approved | denied
+  created_at     INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_base (

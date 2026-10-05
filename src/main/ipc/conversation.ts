@@ -7,6 +7,7 @@ import {
   listMessages,
   renameConversation
 } from '../services/conversations/repo'
+import { listStepsByMessageIds } from '../services/agent/repo'
 import type { ChatMode } from '../../shared/types'
 
 /**
@@ -23,7 +24,14 @@ export function registerConversationHandlers(): void {
   ipcMain.handle('conv:get', (_e, id: string) => {
     const conv = getConversation(id)
     if (!conv) throw new Error('会话不存在或已被删除')
-    return { conversation: conv, messages: listMessages(id) }
+    const messages = listMessages(id)
+    // Agent 历史会话：一次批量回填步骤时间线（避免逐条查询）
+    const stepsMap = listStepsByMessageIds(messages.map((m) => m.id))
+    for (const m of messages) {
+      const steps = stepsMap.get(m.id)
+      if (steps && steps.length > 0) m.agentSteps = steps
+    }
+    return { conversation: conv, messages }
   })
 
   ipcMain.handle('conv:rename', (_e, id: string, title: string) => {

@@ -63,6 +63,11 @@ function runMigrations(conn: DatabaseType): void {
   // M3：message 附加信息（RAG citations 随回答持久化，历史会话可回溯来源）
   addColumnIfMissing('message', 'meta', 'meta TEXT')
 
+  // M5：agent_step 由 M1 提前建表，补齐步骤序号与确认审批状态
+  addColumnIfMissing('agent_step', 'seq', 'seq INTEGER NOT NULL DEFAULT 0')
+  addColumnIfMissing('agent_step', 'confirm_id', 'confirm_id TEXT')
+  addColumnIfMissing('agent_step', 'confirm_status', 'confirm_status TEXT')
+
   // M4：老库已有 chunk 但 FTS 虚表刚由 schema.sql 建立——回填一次。
   // 幂等条件"FTS 空 且 chunk 非空"：正常启动两者都非空时跳过，避免全表扫描。
   // INSERT...WHERE NOT EXISTS 兜底重复执行也不会产生重复 FTS 行。
