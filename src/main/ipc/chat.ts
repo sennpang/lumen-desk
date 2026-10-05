@@ -13,6 +13,7 @@ import { getCloudApiKey } from '../store/secrets'
 import { streamChatCompletion } from '../services/llm/client'
 import { compactIfNeeded, estimateTokens } from '../services/llm/context'
 import { resolveModelConfig } from '../services/llm/resolve'
+import { buildRagSystemPrompt, retrieve, snippetOf } from '../services/rag/retriever'
 import type { RunPayload, StreamEvent } from '../../shared/protocol'
 
 /**
@@ -89,10 +90,41 @@ async function executeRun(
     // 摘要失败不应阻断主流程：降级为用未压缩历史直接请求
     console.warn('[chat] 上下文压缩失败，降级继续：', e)
   }
-  const messages =
-    settings.systemPrompt.trim()
-      ? [{ role: 'system' as const, content: settings.systemPrompt.trim() }, ...history]
-      : history
+
+  // 4.5 RAG 模式：先检索知识库，引用资料注入 system，并按序发 citation 事件
+  // 编号 [1..n] 同时用于：注入资料的序号、模型回答中的角标、渲染端引用卡片
+  let systemContent = settings.systemPrompt.trim()
+  if (payload.mode === 'rag') {
+    if (!payload.kbId) {
+      fail('缺少知识库信息，无法进行知识库问答。')
+      return
+    }
+    let retrieved
+    try {
+      retrieved = await retrieve(payload.message, payload.kbId, {
+        settings,
+        cloudApiKey
+      })
+    } catch (e) {
+      fail(`知识库检索失败：${(e as Error).message}`)
+      return
+    }
+    for (const chunk of retrieved) {
+      emit(target, {
+        type: 'citation',
+        streamId,
+        chunkId: chunk.id,
+        docName: chunk.docName ?? '未命名文档',
+        snippet: snippetOf(chunk.content),
+        page: typeof chunk.meta.page === 'number' ? chunk.meta.page : null
+      })
+    }
+    systemContent = buildRagSystemPrompt(systemContent, retrieved)
+  }
+
+  const messages = systemContent
+    ? [{ role: 'system' as const, content: systemContent }, ...history]
+    : history
 
   // 5. 流式请求
   const controller = new AbortController()
