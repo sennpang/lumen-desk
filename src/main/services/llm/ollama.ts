@@ -1,4 +1,4 @@
-import type { OllamaModelInfo } from '../../../shared/types'
+import type { OllamaModelInfo, OllamaStatus } from '../../../shared/types'
 
 /**
  * Ollama 本地模型发现（F-B2：自动发现本地服务、列出已安装模型）
@@ -26,13 +26,6 @@ async function getJson(url: string, timeoutMs: number): Promise<unknown> {
   })
   if (!res.ok) throw new Error(`Ollama 返回 ${res.status}`)
   return res.json()
-}
-
-export interface OllamaStatus {
-  available: boolean
-  version: string | null
-  /** 不可用时的原因（区分"没启动"与"请求出错"），供 UI 给引导文案 */
-  reason: string | null
 }
 
 /**

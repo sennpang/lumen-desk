@@ -2,6 +2,8 @@ import { ipcMain } from 'electron'
 import { getSettings, getSettingsView, saveSettings } from '../services/settings/repo'
 import { getCloudApiKey, saveCloudApiKey } from '../store/secrets'
 import { testConnection } from '../services/llm/client'
+import { detectOllama } from '../services/llm/ollama'
+import { resolveModelConfig } from '../services/llm/resolve'
 import type { SaveSettingsInput } from '../../shared/types'
 
 /**
@@ -25,13 +27,29 @@ export function registerSettingsHandlers(): void {
   // 测试"已保存"的配置（避免把未保存的明文 Key 经过 IPC 传来传去）
   ipcMain.handle('settings:test', async () => {
     const settings = getSettings()
-    const apiKey = getCloudApiKey()
-    if (!apiKey) throw new Error('请先填写并保存 API Key')
+
+    if (settings.provider === 'local') {
+      // 本地：先探测服务，再校验模型，再发一次最小请求
+      const status = await detectOllama(settings.ollamaUrl)
+      if (!status.available) {
+        throw new Error(
+          `无法连接本地 Ollama 服务（${settings.ollamaUrl}）。请确认已安装并启动 Ollama。${
+            status.reason ? `（${status.reason}）` : ''
+          }`
+        )
+      }
+      if (!settings.ollamaModel.trim()) {
+        throw new Error('Ollama 已连接，但尚未选择模型，请先在模型列表中选择一个。')
+      }
+    }
+
+    const resolved = resolveModelConfig(settings, getCloudApiKey())
+    if (!resolved.ok) throw new Error(resolved.message)
     await testConnection({
-      baseUrl: settings.baseUrl,
-      apiKey,
-      model: settings.model
+      baseUrl: resolved.config.baseUrl,
+      apiKey: resolved.config.apiKey,
+      model: resolved.config.model
     })
-    return { ok: true }
+    return { ok: true as const }
   })
 }

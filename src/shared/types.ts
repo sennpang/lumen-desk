@@ -64,6 +64,14 @@ export interface AppSettings {
   maxContextTokens: number
 }
 
+/** Ollama 服务探测结果（ollama:status 的返回契约，永不抛错） */
+export interface OllamaStatus {
+  available: boolean
+  version: string | null
+  /** 不可用原因（如 connect ECONNREFUSED / 超时），供 UI 给引导文案 */
+  reason: string | null
+}
+
 /** Ollama 已安装模型（来自 GET /api/tags） */
 export interface OllamaModelInfo {
   /** 带 tag 的完整名，如 qwen2.5:7b，调用时直接使用 */
