@@ -180,7 +180,6 @@ export async function removeVectors(kbId: string, chunkIds: string[]): Promise<v
     .map(([label]) => Number(label))
   if (labelsToRemove.length === 0) return
 
-  const elementCount = Object.keys(meta.labels).length
   const index = new HierarchicalNSW(SPACE, meta.dim)
   index.readIndexSync(indexPath(kbId))
   labelsToRemove.forEach((label) => index.markDelete(label))
