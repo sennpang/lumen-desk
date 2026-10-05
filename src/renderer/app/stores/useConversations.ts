@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { api } from '../lib/ipc'
 import type {
+  AgentStepInfo,
   ChatMode,
   CitationRef,
   ConversationInfo,
@@ -32,6 +33,8 @@ interface ConversationsState {
   appendStreaming: (messageId: string, delta: string) => void
   /** citation 事件到达时挂到流式中的 assistant 消息（done 后以库回填为准） */
   attachCitation: (messageId: string, ref: CitationRef) => void
+  /** M5：agent_step 事件增量挂到 assistant 消息（按 stepId 去重、seq 排序） */
+  upsertAgentStep: (messageId: string, step: AgentStepInfo) => void
 }
 
 export const useConversations = create<ConversationsState>((set, get) => ({
@@ -109,6 +112,22 @@ export const useConversations = create<ConversationsState>((set, get) => ({
           ? { ...m, citations: [...(m.citations ?? []), ref] }
           : m
       )
+    }))
+  },
+
+  upsertAgentStep(messageId, step) {
+    set((state) => ({
+      messages: state.messages.map((m) => {
+        if (m.id !== messageId) return m
+        const old = m.agentSteps ?? []
+        // 同一 stepId 的更新（waiting→approved）原位替换；新步骤按 seq 插入
+        const replaced = old.some((s) => s.id === step.id)
+        const next = replaced
+          ? old.map((s) => (s.id === step.id ? step : s))
+          : [...old, step]
+        next.sort((a, b) => a.seq - b.seq)
+        return { ...m, agentSteps: next }
+      })
     }))
   }
 }))

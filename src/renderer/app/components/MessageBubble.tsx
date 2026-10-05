@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/ipc'
-import type { ChunkInfo, MessageRecord } from '../../../shared/types'
+import { useChat } from '../stores/useChat'
+import type {
+  AgentStepInfo,
+  ChunkInfo,
+  MessageRecord
+} from '../../../shared/types'
 
 /**
  * 单条消息气泡。
@@ -27,8 +32,12 @@ export function MessageBubble({ message }: { message: MessageRecord }) {
   }
 
   const citations = message.citations ?? []
+  const steps = message.agentSteps ?? []
   const showThinking =
-    message.status === 'streaming' && !message.content && citations.length === 0
+    message.status === 'streaming' &&
+    !message.content &&
+    citations.length === 0 &&
+    steps.length === 0
 
   return (
     <div className="flex justify-start">
@@ -45,8 +54,17 @@ export function MessageBubble({ message }: { message: MessageRecord }) {
           </span>
         ) : (
           <>
+            {steps.length > 0 && <AgentTimeline steps={steps} />}
             {citations.length > 0 && !message.content && (
               <span className="text-xs text-ink2">已检索到 {citations.length} 条资料，生成中…</span>
+            )}
+            {steps.length > 0 && !message.content && message.status === 'streaming' && (
+              <span className="text-xs text-ink2">
+                {steps.some((s) => s.confirmStatus === 'waiting')
+                  ? '等待你的确认…'
+                  : '工具执行中'}
+                <span className="animate-pulse">…</span>
+              </span>
             )}
             <BodyWithMarks
               content={message.content}
@@ -169,6 +187,124 @@ function CitationList({
         })}
       </ul>
       {activeId && <ChunkModal chunkId={activeId} onClose={() => setActiveId(null)} />}
+    </div>
+  )
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  search_knowledge_base: '检索知识库',
+  get_current_datetime: '查询时间',
+  open_url: '打开链接',
+  save_note: '保存笔记'
+}
+
+/** 参数压成一行短文本给人看（完整值在 title/确认卡片里） */
+function summarizeArgs(args: unknown): string {
+  if (args === null || args === undefined) return ''
+  try {
+    const text = JSON.stringify(args)
+    return text.length > 80 ? text.slice(0, 80) + '…' : text
+  } catch {
+    return String(args)
+  }
+}
+
+/**
+ * M5 Agent 步骤时间线：thought（思考）/ tool_call（行动）/ observation（观察）
+ * 三态节点；副作用工具的等待/批准/拒绝状态与内联确认卡片也挂在这里。
+ */
+function AgentTimeline({ steps }: { steps: AgentStepInfo[] }) {
+  const confirms = useChat((s) => s.confirms)
+  const resolveConfirm = useChat((s) => s.resolveConfirm)
+
+  return (
+    <div className="mb-2.5 flex flex-col gap-1 border-b border-line pb-2.5">
+      {steps.map((step) => {
+        if (step.stepType === 'thought') {
+          return (
+            <details
+              key={step.id}
+              className="group text-xs text-ink2"
+              title="模型在调用工具前的思考"
+            >
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 select-none">
+                <span>💭</span>
+                <span className="text-[11px] text-ink2/70">思考</span>
+              </summary>
+              <p className="mt-1 whitespace-pre-wrap rounded-md bg-paper px-2 py-1.5 italic leading-relaxed">
+                {step.result}
+              </p>
+            </details>
+          )
+        }
+
+        if (step.stepType === 'tool_call') {
+          const label = step.toolName
+            ? TOOL_LABELS[step.toolName] ?? step.toolName
+            : '工具'
+          const card = step.id ? confirms[step.id] : undefined
+          return (
+            <div key={step.id}>
+              <div className="flex items-center gap-1.5 text-xs">
+                <span>🔧</span>
+                <span className="font-medium text-ink">{label}</span>
+                {step.args !== undefined && (
+                  <span className="truncate font-mono text-[11px] text-ink2/80">
+                    {summarizeArgs(step.args)}
+                  </span>
+                )}
+                {step.confirmStatus === 'waiting' && (
+                  <span className="ml-auto shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                    待确认
+                  </span>
+                )}
+                {step.confirmStatus === 'approved' && (
+                  <span className="ml-auto shrink-0 rounded-full bg-brand-bg px-1.5 py-0.5 text-[10px] font-medium text-brand-dark">
+                    已允许
+                  </span>
+                )}
+                {step.confirmStatus === 'denied' && (
+                  <span className="ml-auto shrink-0 rounded-full bg-danger-bg px-1.5 py-0.5 text-[10px] font-medium text-danger">
+                    已拒绝
+                  </span>
+                )}
+              </div>
+              {card && (
+                <div className="mt-1.5 flex flex-col gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2">
+                  <p className="text-xs leading-relaxed text-ink">{card.preview}</p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => void resolveConfirm(card.stepId, true)}
+                      className="rounded-md bg-brand px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-dark"
+                    >
+                      允许
+                    </button>
+                    <button
+                      onClick={() => void resolveConfirm(card.stepId, false)}
+                      className="rounded-md border border-line px-2.5 py-1 text-xs text-ink2 hover:bg-card"
+                    >
+                      拒绝
+                    </button>
+                    <span className="text-[10px] text-ink2/70">
+                      该操作有外部副作用，需你确认后才会执行
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        }
+
+        // observation：默认折两行，title 看全；结果里带 ✅/⚠️ 前缀
+        return (
+          <div key={step.id} className="flex items-start gap-1.5 pl-6 text-xs text-ink2">
+            <span className="mt-px text-ink2/60">↳</span>
+            <p className="line-clamp-2 whitespace-pre-wrap break-all leading-relaxed" title={step.result}>
+              {step.result}
+            </p>
+          </div>
+        )
+      })}
     </div>
   )
 }

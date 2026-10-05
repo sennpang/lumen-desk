@@ -5,13 +5,14 @@ import { useKnowledge } from '../stores/useKnowledge'
 import { useSettings } from '../stores/useSettings'
 import { MessageBubble } from './MessageBubble'
 import { Composer } from './Composer'
+import type { ChatMode } from '../../../shared/types'
 
 /**
  * 主对话区（PRD 5.1）：消息流 + 错误条 + 输入区。
  * 空会话时展示引导（PRD F-A1 空状态）。
  *
- * M3：RAG 模式开关放在输入区上方。切换会话时按 conversation.mode
- * 回填开关状态（历史 RAG 会话继续在知识库模式下对话）。
+ * 模式跟随会话：切换会话按 conversation.mode 回填（chat/rag/agent）；
+ * 新消息写入后该会话以后都以同一模式继续。
  */
 export function ChatView() {
   const { list, currentId, messages } = useConversations()
@@ -21,26 +22,34 @@ export function ChatView() {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const current = list.find((c) => c.id === currentId) ?? null
-  const [ragEnabled, setRagEnabled] = useState(false)
+  const [mode, setMode] = useState<ChatMode>('chat')
 
   // 知识库列表懒加载（对话区需要下拉选择；init 幂等，会确保默认库）
   useEffect(() => {
     void init()
   }, [init])
 
-  // 切换会话：开关跟随该会话的模式
+  // 切换会话：模式跟随该会话
   useEffect(() => {
-    setRagEnabled(current?.mode === 'rag')
+    setMode(current?.mode ?? 'chat')
   }, [currentId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 新消息/流式增量都滚动到底部（依赖最后一条内容长度）
-  const lastLen = messages.at(-1)?.content.length ?? 0
+  // 新消息/流式增量都滚动到底部（依赖最后一条内容长度或步骤数）
+  const lastMsg = messages.at(-1)
+  const lastLen =
+    (lastMsg?.content.length ?? 0) + (lastMsg?.agentSteps?.length ?? 0)
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages.length, lastLen])
 
   const visible = messages.filter((m) => m.role !== 'system')
   const kbName = kbs.find((k) => k.id === currentKbId)?.name ?? null
+  const modeBadge =
+    mode === 'rag'
+      ? `📚 知识库问答${kbName ? ` · ${kbName}` : ''}`
+      : mode === 'agent'
+        ? `🤖 智能体${kbName ? ` · ${kbName}` : ''}`
+        : null
 
   return (
     <section className="flex h-full flex-1 flex-col bg-paper">
@@ -51,9 +60,9 @@ export function ChatView() {
             ? `本地模型 · ${settings.ollamaModel || '未选择'}`
             : `云端模型 · ${settings?.model ?? '未配置'}`}
         </span>
-        {ragEnabled && kbName && (
+        {modeBadge && (
           <span className="rounded-full bg-brand-bg px-2.5 py-0.5 text-xs text-brand-dark">
-            📚 知识库问答 · {kbName}
+            {modeBadge}
           </span>
         )}
       </header>
@@ -88,9 +97,9 @@ export function ChatView() {
       </div>
 
       <Composer
-        ragEnabled={ragEnabled}
+        mode={mode}
         kbId={currentKbId}
-        onToggleRag={setRagEnabled}
+        onModeChange={setMode}
         onSelectKb={(id) => void selectKb(id)}
       />
     </section>
