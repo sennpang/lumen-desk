@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useConversations } from '../stores/useConversations'
 
 interface SidebarProps {
+  view: 'chat' | 'knowledge'
+  onNavigate: (view: 'chat' | 'knowledge') => void
   onOpenSettings: () => void
 }
 
@@ -9,7 +11,7 @@ interface SidebarProps {
  * 左侧边栏（PRD 5.1）：新建对话、会话列表、知识库入口、设置入口。
  * 会话项支持：单击切换、双击/按钮重命名（行内编辑）、删除（confirm 二次确认）。
  */
-export function Sidebar({ onOpenSettings }: SidebarProps) {
+export function Sidebar({ view, onNavigate, onOpenSettings }: SidebarProps) {
   const { list, currentId, createNew, select, rename, remove } = useConversations()
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
@@ -108,11 +110,14 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
 
       <div className="border-t border-line p-2">
         <button
-          disabled
-          className="flex w-full cursor-not-allowed items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-ink2 opacity-50"
-          title="M3 里程碑上线"
+          onClick={() => onNavigate('knowledge')}
+          className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
+            view === 'knowledge'
+              ? 'bg-brand-bg font-medium text-brand-dark'
+              : 'text-ink2 hover:bg-paper'
+          }`}
         >
-          📚 知识库（M3）
+          📚 知识库
         </button>
         <button
           onClick={onOpenSettings}
