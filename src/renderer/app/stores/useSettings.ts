@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { api } from '../lib/ipc'
-import type { SaveSettingsInput, SettingsView } from '../../../shared/types'
+import type { OllamaModelInfo, OllamaStatus, SaveSettingsInput, SettingsView } from '../../../shared/types'
 
 /**
  * 设置页状态（F-B1/F-B3）。
@@ -12,10 +12,17 @@ interface SettingsState {
   testing: boolean
   statusLine: { kind: 'ok' | 'error'; text: string } | null
 
+  // Ollama 发现状态（F-B2）
+  ollamaStatus: OllamaStatus | null
+  ollamaModels: OllamaModelInfo[]
+  checkingOllama: boolean
+
   load: () => Promise<void>
   save: (input: SaveSettingsInput) => Promise<void>
   test: () => Promise<void>
   clearStatus: () => void
+  /** 探测服务；可用时顺带拉取模型列表（一次点击完成"发现+列模型"） */
+  refreshOllama: () => Promise<void>
 }
 
 export const useSettings = create<SettingsState>((set) => ({
@@ -23,6 +30,9 @@ export const useSettings = create<SettingsState>((set) => ({
   saving: false,
   testing: false,
   statusLine: null,
+  ollamaStatus: null,
+  ollamaModels: [],
+  checkingOllama: false,
 
   async load() {
     set({ settings: await api.settings.get() })
@@ -55,5 +65,21 @@ export const useSettings = create<SettingsState>((set) => ({
 
   clearStatus() {
     set({ statusLine: null })
+  },
+
+  async refreshOllama() {
+    set({ checkingOllama: true })
+    try {
+      // 用"已保存"的地址探测，所以先确保地址设置落库（由 UI 在保存后调用）
+      const status = await api.ollama.status()
+      if (status.available) {
+        const models = await api.ollama.models()
+        set({ ollamaStatus: status, ollamaModels: models })
+      } else {
+        set({ ollamaStatus: status, ollamaModels: [] })
+      }
+    } finally {
+      set({ checkingOllama: false })
+    }
   }
 }))

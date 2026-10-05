@@ -28,8 +28,9 @@ export function ChatView() {
       {/* 顶部模型标识 */}
       <header className="flex items-center justify-between border-b border-line bg-paper px-5 py-2.5">
         <span className="text-xs text-ink2">
-          {settings?.provider === 'local' ? '本地模型' : '云端模型'} ·{' '}
-          {settings?.model ?? '未配置'}
+          {settings?.provider === 'local'
+            ? `本地模型 · ${settings.ollamaModel || '未选择'}`
+            : `云端模型 · ${settings?.model ?? '未配置'}`}
         </span>
       </header>
 
