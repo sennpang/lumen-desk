@@ -22,7 +22,7 @@ export function App() {
     window.api
       .ping()
       .then((res) => {
-        console.log('[M0] app:ping 返回：', res)
+        console.log('[M0] app:ping 返回：', JSON.stringify(res))
         setPong(res)
       })
       .catch((e: unknown) => {

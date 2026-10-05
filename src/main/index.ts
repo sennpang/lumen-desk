@@ -34,9 +34,10 @@ function createWindow(): void {
   // 把渲染进程的 console 输出转发到主进程终端
   // （渲染进程没有终端窗口，不转发则页面里的 console.log 无处可看；
   //   后续调试流式事件、Agent 时间线都依赖这条日志通道）
-  win.webContents.on('console-message', (_event, level, message) => {
-    const prefix = level === 3 ? '[renderer:error]' : '[renderer]'
-    console.log(`${prefix} ${message}`)
+  // Electron 44 新签名：单参数 details，level 为字符串枚举
+  win.webContents.on('console-message', (details) => {
+    const prefix = details.level === 'error' ? '[renderer:error]' : '[renderer]'
+    console.log(`${prefix} ${details.message}`)
   })
 
   // 外部链接一律交给系统浏览器，绝不在应用内打开第三方页面
