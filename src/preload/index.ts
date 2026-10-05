@@ -4,6 +4,8 @@ import type {
   ChatMode,
   ConversationInfo,
   MessageRecord,
+  OllamaModelInfo,
+  OllamaStatus,
   SaveSettingsInput,
   SettingsView
 } from '../shared/types'
@@ -57,6 +59,13 @@ const api = {
     /** 测试"已保存"的配置；失败时 Promise reject 携带错误信息 */
     testConnection: (): Promise<{ ok: true }> =>
       ipcRenderer.invoke('settings:test')
+  },
+
+  ollama: {
+    /** 探测本地 Ollama 服务（不抛错，读 available/reason） */
+    status: (): Promise<OllamaStatus> => ipcRenderer.invoke('ollama:status'),
+    /** 列出已安装模型；服务不可达时 reject */
+    models: (): Promise<OllamaModelInfo[]> => ipcRenderer.invoke('ollama:models')
   }
 }
 
