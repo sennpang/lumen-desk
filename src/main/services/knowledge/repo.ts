@@ -89,8 +89,21 @@ export function ensureDefaultKb(): KnowledgeBaseInfo {
 }
 
 export function deleteKb(kbId: string): void {
-  // document/chunk 由 ON DELETE CASCADE 连带删除（foreign_keys=ON）
-  getDb().prepare('DELETE FROM knowledge_base WHERE id = ?').run(kbId)
+  const db = getDb()
+  const tx = db.transaction(() => {
+    // FTS 虚表不参与外键 CASCADE，必须手动清（顺序：先 FTS 再删 chunk/document）
+    db.prepare(
+      `DELETE FROM chunk_fts
+        WHERE chunk_id IN (
+          SELECT c.id FROM chunk c
+            JOIN document d ON d.id = c.document_id
+           WHERE d.kb_id = ?
+        )`
+    ).run(kbId)
+    // document/chunk 由 ON DELETE CASCADE 连带删除（foreign_keys=ON）
+    db.prepare('DELETE FROM knowledge_base WHERE id = ?').run(kbId)
+  })
+  tx()
 }
 
 // ---------------- document ----------------
@@ -158,8 +171,16 @@ export function updateDocStatus(
 }
 
 export function deleteDoc(docId: string): void {
-  // chunk 由外键 CASCADE 连带删除；向量索引的 label 由上层 vectorStore 先移除
-  getDb().prepare('DELETE FROM document WHERE id = ?').run(docId)
+  const db = getDb()
+  // 事务保证"清 FTS + 删文档"原子：chunk 行由外键 CASCADE 连带删除，
+  // 但 FTS 是独立虚表，不会跟着删，漏掉就会搜到已删除文档的幽灵片段
+  const tx = db.transaction(() => {
+    db.prepare(
+      'DELETE FROM chunk_fts WHERE chunk_id IN (SELECT id FROM chunk WHERE document_id = ?)'
+    ).run(docId)
+    db.prepare('DELETE FROM document WHERE id = ?').run(docId)
+  })
+  tx()
 }
 
 // ---------------- chunk ----------------
@@ -181,12 +202,54 @@ export function insertChunks(docId: string, chunks: NewChunk[]): void {
     `INSERT INTO chunk(id, document_id, chunk_index, content, token_count, meta)
      VALUES(?, ?, ?, ?, ?, ?)`
   )
+  // 同一事务同步写 FTS：与 chunk 行同生共死，不会出现"能搜到但取不出"
+  const ftsStmt = db.prepare(
+    'INSERT INTO chunk_fts(content, chunk_id) VALUES(?, ?)'
+  )
   const tx = db.transaction((items: NewChunk[]) => {
     items.forEach((c, i) => {
       stmt.run(c.id, docId, i, c.content, c.tokenCount, JSON.stringify(c.meta))
+      ftsStmt.run(c.content, c.id)
     })
   })
   tx(chunks)
+}
+
+export interface KeywordHit {
+  chunk: ChunkInfo
+  /** FTS5 内置 BM25 原始分：值越小（越负）越相关 */
+  bm25: number
+}
+
+/**
+ * 关键词召回（M4 混合检索的一路）：FTS5 trigram + 内置 BM25 排序。
+ *
+ * @param matchExpr 已经过转义/构造的 MATCH 表达式（见 hybrid.buildFtsMatch），
+ *                  绝不直接拼用户原始输入（引号等 FTS 语法字符会注入）
+ *
+ * 注意 AND 优先级（参考经验）：MATCH 与 kb 库过滤是同一 WHERE 下的两个
+ * 合取支，FTS 先按索引召回、JOIN document 后再限定 kb 范围，
+ * 不存在 OR 冲掉库过滤的问题。
+ */
+export function searchChunksByKeyword(
+  kbId: string,
+  matchExpr: string,
+  limit: number
+): KeywordHit[] {
+  if (limit <= 0) return []
+  const rows = getDb()
+    .prepare(
+      `SELECT c.id, c.document_id, c.chunk_index, c.content, c.token_count, c.meta,
+              d.file_name AS doc_name, bm25(chunk_fts) AS bm25
+         FROM chunk_fts
+         JOIN chunk c ON c.id = chunk_fts.chunk_id
+         JOIN document d ON d.id = c.document_id
+        WHERE chunk_fts MATCH ? AND d.kb_id = ?
+        ORDER BY bm25
+        LIMIT ?`
+    )
+    .all(matchExpr, kbId, limit) as Array<ChunkRow & { bm25: number }>
+  return rows.map((r) => ({ chunk: toChunkInfo(r), bm25: r.bm25 }))
 }
 
 export function getChunk(chunkId: string): ChunkInfo | null {

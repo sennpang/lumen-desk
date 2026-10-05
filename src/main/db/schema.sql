@@ -69,6 +69,18 @@ CREATE TABLE IF NOT EXISTS chunk (
 );
 -- 注意：chunk 的向量不入库，写入 vectors/{kbId}.index，以 chunk.id 为 label 关联
 
+-- M4：chunk 全文索引（关键词召回，与 HNSW 向量召回互补）
+-- trigram 分词器：把文本切成连续三字元组，天然支持中文/日文等无空格语言的
+-- 子串匹配（unicode61 会把整段中文当成一个 token，基本不可用）。
+-- chunk_id 只作关联键不参与分词；库过滤运行时 JOIN document 完成，不冗余 kb_id。
+-- 内容同步不走触发器：chunk 只有"批量插入/随文档删除"两个写路径，
+-- 在仓储同一事务里维护 FTS 更直观可控；老数据由 runMigrations 回填一次。
+CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
+  content,
+  chunk_id UNINDEXED,
+  tokenize = 'trigram'
+);
+
 CREATE TABLE IF NOT EXISTS app_setting (
   key    TEXT PRIMARY KEY,                -- 非密配置；密钥走 safeStorage
   value  TEXT NOT NULL

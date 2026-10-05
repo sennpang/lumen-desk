@@ -62,6 +62,23 @@ function runMigrations(conn: DatabaseType): void {
   addColumnIfMissing('document', 'error', 'error TEXT')
   // M3：message 附加信息（RAG citations 随回答持久化，历史会话可回溯来源）
   addColumnIfMissing('message', 'meta', 'meta TEXT')
+
+  // M4：老库已有 chunk 但 FTS 虚表刚由 schema.sql 建立——回填一次。
+  // 幂等条件"FTS 空 且 chunk 非空"：正常启动两者都非空时跳过，避免全表扫描。
+  // INSERT...WHERE NOT EXISTS 兜底重复执行也不会产生重复 FTS 行。
+  const ftsCount = (
+    conn.prepare('SELECT COUNT(*) AS n FROM chunk_fts').get() as { n: number }
+  ).n
+  const chunkCount = (
+    conn.prepare('SELECT COUNT(*) AS n FROM chunk').get() as { n: number }
+  ).n
+  if (ftsCount === 0 && chunkCount > 0) {
+    conn.exec(
+      `INSERT INTO chunk_fts(content, chunk_id)
+       SELECT c.content, c.id FROM chunk c
+       WHERE NOT EXISTS (SELECT 1 FROM chunk_fts f WHERE f.chunk_id = c.id)`
+    )
+  }
 }
 
 export function closeDb(): void {
