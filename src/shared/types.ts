@@ -50,14 +50,30 @@ export type ModelProvider = 'cloud' | 'local'
 /** 非密设置（app_setting 表） */
 export interface AppSettings {
   provider: ModelProvider
-  /** OpenAI 兼容网关地址，默认 DeepSeek */
+  /** 云端 OpenAI 兼容网关地址，默认 DeepSeek */
   baseUrl: string
   model: string
+  /** 本地 Ollama 服务地址（F-B2，默认 11434 端口） */
+  ollamaUrl: string
+  /** 已选择的本地模型（带 tag，如 qwen2.5:7b）；空串表示尚未选择 */
+  ollamaModel: string
   /** 生成参数（F-B3） */
   temperature: number
   systemPrompt: string
   /** 上下文窗口上限（tokens 估算值），超出触发压缩 */
   maxContextTokens: number
+}
+
+/** Ollama 已安装模型（来自 GET /api/tags） */
+export interface OllamaModelInfo {
+  /** 带 tag 的完整名，如 qwen2.5:7b，调用时直接使用 */
+  name: string
+  /** 参数量，如 7B */
+  parameterSize: string
+  /** 量化级别，如 Q4_0 */
+  quantization: string
+  /** 模型大小（字节） */
+  size: number
 }
 
 /** 渲染端能看到的设置视图：API Key 永不下发明文，只告知是否已配置 */
