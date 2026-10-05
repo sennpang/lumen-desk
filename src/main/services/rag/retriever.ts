@@ -1,20 +1,27 @@
 import type { RetrievedChunk } from '../../../shared/types'
-import { chunksByIds } from '../knowledge/repo'
+import { chunksByIds, searchChunksByKeyword } from '../knowledge/repo'
 import { embedOne, type EmbeddingDeps } from './embedder'
 import { searchVectors } from './vectorStore'
+import { buildQueryTerms, lexicalBoost, reciprocalRankFusion } from './hybrid'
 
 /**
- * 检索器（M3：纯向量召回；M4 在此叠加 BM25 + RRF + rerank）
+ * 检索器（M3 纯向量 → M4 混合检索）
  *
- * 流水线：问题文本 → embedding → HNSW 取 topK 个整数 label →
- * 映射回 chunkId → SQLite 回填原文（保持相关度顺序）。
+ * M4 流水线：问题文本
+ *   ├─ embedding → HNSW 向量召回 top 20（语义相似）
+ *   └─ trigram FTS5 BM25 关键词召回 top 20（字面精确）
+ *         → RRF 融合（只认排名，免疫两种分数尺度差异）
+ *         → 词法特征重排（覆盖率/精确短语/标题命中）
+ *         → 取 topK → SQLite 回填原文
  *
- * 接口刻意收窄为 retrieve()：M4 只需要在函数内部增加混合召回与重排，
- * 上层 chat 编排零改动。
+ * 开关：settings.hybridSearchEnabled=false 或查询短于 3 字时，
+ * 退化为 M3 纯向量路径。
  */
 
-/** M3 纯向量阶段取 6 条（PRD M4 混合检索阶段再细化候选与精排参数） */
+/** 最终注入 prompt / 展示的条数（PRD 14.3 引用上限取 6） */
 export const DEFAULT_TOP_K = 6
+/** 每路召回的候选池大小：先宽召回，融合重排后再截断 */
+const RECALL_CANDIDATES = 20
 
 export async function retrieve(
   query: string,
@@ -25,18 +32,63 @@ export async function retrieve(
   // 空问题不检索（trim 后），交给上层做参数校验更合适，这里再兜一层
   if (!query.trim()) return []
 
+  const terms = buildQueryTerms(query)
+
+  // 1. 向量路（语义召回，始终执行）
   const queryVector = await embedOne(query, deps)
-  const hits = await searchVectors(kbId, queryVector, topK)
-  if (hits.length === 0) return []
+  const vectorHits = await searchVectors(kbId, queryVector, RECALL_CANDIDATES)
 
-  // IN 查询回填后按 HNSW 的相关度顺序重排（仓储层保证）
-  const chunks = chunksByIds(hits.map((h) => h.chunkId))
-  const distanceByChunk = new Map(hits.map((h) => [h.chunkId, h.distance]))
+  // 2. 关键词路（开关关闭 / 查询太短无词元 / FTS 异常时降级跳过）
+  const hybridOn = deps.settings.hybridSearchEnabled !== false
+  let keywordHits: ReturnType<typeof searchChunksByKeyword> = []
+  if (hybridOn && terms) {
+    try {
+      keywordHits = searchChunksByKeyword(kbId, terms.matchExpr, RECALL_CANDIDATES)
+    } catch (e) {
+      // 检索是问答主链路的一环，词法索引出问题不能拖死整轮：降级纯向量
+      console.warn('[retriever] 关键词召回失败，降级纯向量：', e)
+    }
+  }
 
-  return chunks.map((chunk) => ({
-    ...chunk,
-    distance: distanceByChunk.get(chunk.id) ?? Number.POSITIVE_INFINITY
-  }))
+  if (vectorHits.length === 0 && keywordHits.length === 0) return []
+
+  const distanceByChunk = new Map(vectorHits.map((h) => [h.chunkId, h.distance]))
+
+  // 3. 纯向量快路径（与 M3 行为一致：召回 20 截前 topK）
+  if (keywordHits.length === 0) {
+    const chunks = chunksByIds(vectorHits.slice(0, topK).map((h) => h.chunkId))
+    return chunks.map((chunk) => ({
+      ...chunk,
+      distance: distanceByChunk.get(chunk.id) ?? Number.POSITIVE_INFINITY
+    }))
+  }
+
+  // 4. RRF 融合 + 词法重排
+  const fused = reciprocalRankFusion(
+    vectorHits.map((h) => h.chunkId),
+    keywordHits.map((h) => h.chunk.id)
+  )
+  const fusedById = new Map(fused.map((f) => [f.chunkId, f]))
+
+  // 一次 IN 查询回填并集，再按融合分排序（chunksByIds 保序的入参顺序即 fused 顺序）
+  const chunks = chunksByIds(fused.map((f) => f.chunkId))
+  return chunks
+    .map((chunk) => {
+      const f = fusedById.get(chunk.id)
+      const boost = terms
+        ? lexicalBoost(chunk.content, chunk.meta.headingPath, terms)
+        : 0
+      return {
+        chunk,
+        finalScore: (f?.rrf ?? 0) + boost
+      }
+    })
+    .sort((a, b) => b.finalScore - a.finalScore)
+    .slice(0, topK)
+    .map(({ chunk }) => ({
+      ...chunk,
+      distance: distanceByChunk.get(chunk.id) ?? Number.POSITIVE_INFINITY
+    }))
 }
 
 /** 引用卡片/事件用的短摘要：去换行、限长，完整内容仍可通过 kb:chunk 查看 */

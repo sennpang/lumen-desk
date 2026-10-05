@@ -76,6 +76,11 @@ export interface AppSettings {
   ollamaEmbedModel: string
   /** 云端 embedding 模型（OpenAI 兼容 /embeddings，复用云端 baseUrl 与 Key） */
   cloudEmbedModel: string
+  /**
+   * M4 混合检索开关：true = 向量召回 + FTS5 关键词召回经 RRF 融合；
+   * false = M3 的纯向量召回。默认开启（专有名词/编号/精确措辞靠关键词补语义盲区）
+   */
+  hybridSearchEnabled: boolean
   /** 生成参数（F-B3） */
   temperature: number
   systemPrompt: string

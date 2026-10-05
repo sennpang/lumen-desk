@@ -28,6 +28,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // 云端 embedding 需用户在设置里填：要求其 OpenAI 兼容网关同时提供
   // /v1/embeddings（DeepSeek 本身没有 embedding 接口，可选硅基流动/智谱/OpenAI）
   cloudEmbedModel: '',
+  // M4：默认混合检索（向量 + 关键词 RRF），关掉则退化为 M3 纯向量
+  hybridSearchEnabled: true,
   temperature: 0.7,
   systemPrompt: '你是 Lumen Desk，一个严谨、简洁的 AI 助手。',
   // 上下文保护阈值（估算 token）；超过则压缩早期对话（F-A2）

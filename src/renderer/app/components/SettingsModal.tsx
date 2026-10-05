@@ -35,6 +35,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     embeddingProvider: 'ollama' as 'ollama' | 'cloud',
     ollamaEmbedModel: 'nomic-embed-text',
     cloudEmbedModel: '',
+    hybridSearchEnabled: true,
     temperature: 0.7,
     systemPrompt: '',
     maxContextTokens: 24000,
@@ -60,6 +61,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         embeddingProvider: settings.embeddingProvider,
         ollamaEmbedModel: settings.ollamaEmbedModel,
         cloudEmbedModel: settings.cloudEmbedModel,
+        hybridSearchEnabled: settings.hybridSearchEnabled,
         temperature: settings.temperature,
         systemPrompt: settings.systemPrompt,
         maxContextTokens: settings.maxContextTokens
@@ -86,6 +88,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       embeddingProvider: form.embeddingProvider,
       ollamaEmbedModel: form.ollamaEmbedModel.trim(),
       cloudEmbedModel: form.cloudEmbedModel.trim(),
+      hybridSearchEnabled: form.hybridSearchEnabled,
       temperature: form.temperature,
       systemPrompt: form.systemPrompt,
       maxContextTokens: form.maxContextTokens,
