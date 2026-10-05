@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type DragEvent } from 'react'
 import { api } from '../lib/ipc'
 import { useKnowledge } from '../stores/useKnowledge'
+import { useSettings } from '../stores/useSettings'
 import type { ChunkInfo, DocumentInfo } from '../../../shared/types'
 
 /**
@@ -54,6 +55,15 @@ export function KnowledgeView({ onBack }: { onBack: () => void }) {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [chunks, setChunks] = useState<ChunkInfo[]>([])
   const [chunksLoading, setChunksLoading] = useState(false)
+
+  // M4：混合检索开关（设置持久化在 app_setting，问答检索时即时生效）
+  const settings = useSettings((s) => s.settings)
+  const saveSettings = useSettings((s) => s.save)
+  const hybridOn = settings?.hybridSearchEnabled ?? true
+  const toggleHybrid = () => {
+    if (!settings) return
+    void saveSettings({ ...settings, hybridSearchEnabled: !hybridOn })
+  }
 
   // 进入页面时确保默认库与列表就绪（init 幂等）
   useEffect(() => {
@@ -145,6 +155,22 @@ export function KnowledgeView({ onBack }: { onBack: () => void }) {
               ＋ 新建
             </button>
           )}
+          <button
+            onClick={toggleHybrid}
+            className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition ${
+              hybridOn
+                ? 'border-brand bg-brand-bg font-medium text-brand-dark'
+                : 'border-line text-ink2 hover:bg-card'
+            }`}
+            title="混合检索：语义向量 + 关键词 BM25 双路召回后融合排序；关闭则仅用语义向量"
+          >
+            <span
+              className={`inline-block h-2 w-2 rounded-full ${
+                hybridOn ? 'bg-brand' : 'bg-ink2/40'
+              }`}
+            />
+            混合检索
+          </button>
           <button
             onClick={() => void reindex()}
             disabled={importing}
