@@ -1,6 +1,11 @@
 import { create } from 'zustand'
 import { api } from '../lib/ipc'
-import type { ChatMode, ConversationInfo, MessageRecord } from '../../../shared/types'
+import type {
+  ChatMode,
+  CitationRef,
+  ConversationInfo,
+  MessageRecord
+} from '../../../shared/types'
 
 /**
  * 会话状态（F-A3）：会话列表、当前会话、当前消息数组。
@@ -25,6 +30,8 @@ interface ConversationsState {
 
   /** 流式 token 到达时本地追加到对应 assistant 消息（避免每 token 查库） */
   appendStreaming: (messageId: string, delta: string) => void
+  /** citation 事件到达时挂到流式中的 assistant 消息（done 后以库回填为准） */
+  attachCitation: (messageId: string, ref: CitationRef) => void
 }
 
 export const useConversations = create<ConversationsState>((set, get) => ({
@@ -91,6 +98,16 @@ export const useConversations = create<ConversationsState>((set, get) => ({
     set((state) => ({
       messages: state.messages.map((m) =>
         m.id === messageId ? { ...m, content: m.content + delta } : m
+      )
+    }))
+  },
+
+  attachCitation(messageId, ref) {
+    set((state) => ({
+      messages: state.messages.map((m) =>
+        m.id === messageId
+          ? { ...m, citations: [...(m.citations ?? []), ref] }
+          : m
       )
     }))
   }

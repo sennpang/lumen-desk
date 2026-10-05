@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { api } from '../lib/ipc'
 import { useConversations } from './useConversations'
+import type { ChatMode } from '../../../shared/types'
 import type { StreamEvent } from '../../../shared/protocol'
 
 /**
@@ -22,7 +23,11 @@ interface ChatState {
   /** 发送中（invoke 返回前的极短窗口，禁用发送按钮） */
   sending: boolean
 
-  send: (text: string) => Promise<void>
+  /**
+   * @param mode 普通对话或知识库问答；隐式新建会话时写入 conversation.mode
+   * @param kbId mode='rag' 时必填
+   */
+  send: (text: string, mode?: ChatMode, kbId?: string) => Promise<void>
   stop: () => Promise<void>
   handleEvent: (ev: StreamEvent) => Promise<void>
   clearError: () => void
@@ -33,7 +38,7 @@ export const useChat = create<ChatState>((set, get) => ({
   error: null,
   sending: false,
 
-  async send(text) {
+  async send(text, mode = 'chat', kbId) {
     const content = text.trim()
     if (!content || get().activeRun || get().sending) return
 
@@ -42,8 +47,9 @@ export const useChat = create<ChatState>((set, get) => ({
       const currentId = useConversations.getState().currentId
       const streamId = await api.chat.run({
         conversationId: currentId ?? undefined,
-        mode: 'chat',
-        message: content
+        mode,
+        message: content,
+        ...(mode === 'rag' && kbId ? { kbId } : {})
       })
       // activeRun 在 start 事件里设置（那里能拿到 assistant messageId）
       void streamId
@@ -86,6 +92,18 @@ export const useChat = create<ChatState>((set, get) => ({
         if (run) useConversations.getState().appendStreaming(run.messageId, ev.delta)
         break
       }
+      case 'citation': {
+        // 检索完成、正文开始前到达；先挂到占位 assistant 消息上即时渲染，
+        // done 时 hydrate 会用持久化版本覆盖（同一份数据）
+        const run = get().activeRun
+        if (run) {
+          const { chunkId, docName, snippet, page } = ev
+          useConversations
+            .getState()
+            .attachCitation(run.messageId, { chunkId, docName, snippet, page })
+        }
+        break
+      }
       case 'error': {
         set({ activeRun: null, error: ev.message })
         await useConversations.getState().hydrateCurrent()
@@ -99,8 +117,7 @@ export const useChat = create<ChatState>((set, get) => ({
         await useConversations.getState().refreshList()
         break
       }
-      // M3/M5 事件：M1 先显式忽略，保证 reducer 对判别联合的穷尽
-      case 'citation':
+      // M5 事件：M3 先显式忽略，保证 reducer 对判别联合的穷尽
       case 'agent_step':
       case 'confirm_required':
         break
