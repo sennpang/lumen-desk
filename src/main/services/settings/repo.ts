@@ -18,6 +18,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // DeepSeek 官方 OpenAI 兼容端点（PRD F-B1 默认 DeepSeek）
   baseUrl: 'https://api.deepseek.com',
   model: 'deepseek-chat',
+  // Ollama 默认本机端口；用 127.0.0.1 比 localhost 更稳（跳过 DNS 解析差异，断网也可达）
+  ollamaUrl: 'http://127.0.0.1:11434',
+  ollamaModel: '',
   temperature: 0.7,
   systemPrompt: '你是 Lumen Desk，一个严谨、简洁的 AI 助手。',
   // 上下文保护阈值（估算 token）；超过则压缩早期对话（F-A2）
