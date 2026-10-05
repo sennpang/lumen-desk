@@ -1,0 +1,212 @@
+import { randomUUID } from 'node:crypto'
+import { getDb } from '../../db/sqlite'
+import type {
+  ChatMode,
+  ConversationInfo,
+  ChatMessage,
+  MessageRecord,
+  MessageRole,
+  MessageStatus
+} from '../../../shared/types'
+
+/**
+ * 会话/消息仓储（PRD 第 12 章 conversation / message 表）
+ *
+ * 唯一负责"SQL 行 <-> 领域对象"转换的地方：
+ * 表用 snake_case + INTEGER 时间戳，TS 用 camelCase，转换集中在此，
+ * 上层 IPC/UI 不感知数据库列名。
+ */
+
+interface ConversationRow {
+  id: string
+  title: string
+  created_at: number
+  updated_at: number
+  mode: string
+  model_id: string | null
+}
+
+interface MessageRow {
+  id: string
+  conversation_id: string
+  role: string
+  content: string
+  status: string
+  tokens: number | null
+  created_at: number
+  seq: number
+}
+
+function toConversationInfo(r: ConversationRow): ConversationInfo {
+  return {
+    id: r.id,
+    title: r.title,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    mode: r.mode as ChatMode,
+    modelId: r.model_id
+  }
+}
+
+function toMessageRecord(r: MessageRow): MessageRecord {
+  return {
+    id: r.id,
+    conversationId: r.conversation_id,
+    role: r.role as MessageRole,
+    content: r.content,
+    status: r.status as MessageStatus,
+    tokens: r.tokens,
+    createdAt: r.created_at,
+    seq: r.seq
+  }
+}
+
+export function createConversation(mode: ChatMode, modelId: string | null): ConversationInfo {
+  const now = Date.now()
+  const info: ConversationInfo = {
+    id: randomUUID(),
+    title: '新对话',
+    createdAt: now,
+    updatedAt: now,
+    mode,
+    modelId
+  }
+  getDb()
+    .prepare(
+      `INSERT INTO conversation(id, title, created_at, updated_at, mode, model_id)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(info.id, info.title, now, now, mode, modelId)
+  return info
+}
+
+export function listConversations(): ConversationInfo[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM conversation ORDER BY updated_at DESC')
+    .all() as ConversationRow[]
+  return rows.map(toConversationInfo)
+}
+
+export function getConversation(id: string): ConversationInfo | null {
+  const row = getDb()
+    .prepare('SELECT * FROM conversation WHERE id = ?')
+    .get(id) as ConversationRow | undefined
+  return row ? toConversationInfo(row) : null
+}
+
+export function renameConversation(id: string, title: string): void {
+  getDb()
+    .prepare('UPDATE conversation SET title = ?, updated_at = ? WHERE id = ?')
+    .run(title.trim(), Date.now(), id)
+}
+
+export function deleteConversation(id: string): void {
+  // message 行靠 ON DELETE CASCADE 自动清理（前提：PRAGMA foreign_keys=ON）
+  getDb().prepare('DELETE FROM conversation WHERE id = ?').run(id)
+}
+
+export function touchConversation(id: string, modelId?: string | null): void {
+  getDb()
+    .prepare(
+      `UPDATE conversation
+       SET updated_at = ?, model_id = COALESCE(?, model_id)
+       WHERE id = ?`
+    )
+    .run(Date.now(), modelId ?? null, id)
+}
+
+/** 首条用户消息发出后，用消息内容前若干字作为会话标题 */
+export function autoTitleFromFirstMessage(id: string, content: string): void {
+  const title = content.replace(/\s+/g, ' ').trim().slice(0, 24) || '新对话'
+  getDb().prepare('UPDATE conversation SET title = ? WHERE id = ?').run(title, id)
+}
+
+// ---------------- message ----------------
+
+function nextSeq(conversationId: string): number {
+  const row = getDb()
+    .prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM message WHERE conversation_id = ?')
+    .get(conversationId) as { next: number }
+  return row.next
+}
+
+export interface AddMessageInput {
+  conversationId: string
+  role: MessageRole
+  content: string
+  status?: MessageStatus
+  tokens?: number | null
+}
+
+export function addMessage(input: AddMessageInput): MessageRecord {
+  const db = getDb()
+  const record: MessageRecord = {
+    id: randomUUID(),
+    conversationId: input.conversationId,
+    role: input.role,
+    content: input.content,
+    status: input.status ?? 'done',
+    tokens: input.tokens ?? null,
+    createdAt: Date.now(),
+    seq: 0 // 下方事务内赋值
+  }
+
+  // 事务保证"取最大序号 + 插入"原子，并发写入也不会撞 UNIQUE(conversation_id, seq)
+  const tx = db.transaction(() => {
+    record.seq = nextSeq(input.conversationId)
+    db.prepare(
+      `INSERT INTO message(id, conversation_id, role, content, status, tokens, created_at, seq)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      record.id,
+      record.conversationId,
+      record.role,
+      record.content,
+      record.status,
+      record.tokens,
+      record.createdAt,
+      record.seq
+    )
+  })
+  tx()
+  return record
+}
+
+export function updateMessage(
+  id: string,
+  patch: { content?: string; status?: MessageStatus; tokens?: number | null }
+): void {
+  const fields: string[] = []
+  const values: unknown[] = []
+  if (patch.content !== undefined) {
+    fields.push('content = ?')
+    values.push(patch.content)
+  }
+  if (patch.status !== undefined) {
+    fields.push('status = ?')
+    values.push(patch.status)
+  }
+  if (patch.tokens !== undefined) {
+    fields.push('tokens = ?')
+    values.push(patch.tokens)
+  }
+  if (fields.length === 0) return
+  values.push(id)
+  getDb()
+    .prepare(`UPDATE message SET ${fields.join(', ')} WHERE id = ?`)
+    .run(...values)
+}
+
+export function listMessages(conversationId: string): MessageRecord[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM message WHERE conversation_id = ? ORDER BY seq ASC')
+    .all(conversationId) as MessageRow[]
+  return rows.map(toMessageRecord)
+}
+
+/** 组装发给 LLM 的上下文（只要 user/assistant/system 的已完成文本，tool 角色 M5 再加） */
+export function buildChatHistory(conversationId: string): ChatMessage[] {
+  return listMessages(conversationId)
+    .filter((m) => m.status === 'done' && m.role !== 'tool')
+    .map((m) => ({ role: m.role, content: m.content }))
+}
