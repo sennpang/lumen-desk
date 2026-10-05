@@ -23,6 +23,8 @@ import type {
 const api = {
   /** M0 健康检查 */
   ping: () => ipcRenderer.invoke('app:ping'),
+  /** M6 关于：版本/Electron/Chrome/Node 与平台架构 */
+  about: () => ipcRenderer.invoke('app:about'),
 
   chat: {
     /** 发起一次运行，返回 streamId；过程经 onEvent 推送 */

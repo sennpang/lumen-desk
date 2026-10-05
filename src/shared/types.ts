@@ -95,6 +95,18 @@ export interface AgentStepInfo {
 /** 模型来源 */
 export type ModelProvider = 'cloud' | 'local'
 
+/** 关于信息（app:about，设置页"关于"区展示，排障时也用于反馈环境） */
+export interface AppAbout {
+  version: string
+  electronVersion: string
+  chromeVersion: string
+  nodeVersion: string
+  platform: NodeJS.Platform
+  arch: string
+  /** true=安装包运行，false=dev/preview 源码运行 */
+  packaged: boolean
+}
+
 /** embedding 向量化来源（可独立于对话模型选择） */
 export type EmbeddingProvider = 'ollama' | 'cloud'
 

@@ -34,4 +34,15 @@ export function registerIpcHandlers(): void {
       time: Date.now()
     }
   })
+
+  // M6 关于信息：用户反馈问题时需要明确版本与运行时环境
+  ipcMain.handle('app:about', () => ({
+    version: app.getVersion(),
+    electronVersion: process.versions.electron,
+    chromeVersion: process.versions.chrome,
+    nodeVersion: process.versions.node,
+    platform: process.platform,
+    arch: process.arch,
+    packaged: app.isPackaged
+  }))
 }

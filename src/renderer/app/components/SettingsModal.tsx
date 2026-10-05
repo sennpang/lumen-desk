@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useSettings } from '../stores/useSettings'
-import type { OllamaModelInfo, OllamaStatus } from '../../../shared/types'
+import { api } from '../lib/ipc'
+import type { AppAbout, OllamaModelInfo, OllamaStatus } from '../../../shared/types'
 
 interface SettingsModalProps {
   open: boolean
@@ -313,6 +314,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               {statusLine.text}
             </p>
           )}
+
+          <AboutSection />
         </div>
 
         <footer className="flex justify-end gap-2 border-t border-line px-5 py-3">
@@ -333,6 +336,36 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         </footer>
       </div>
     </div>
+  )
+}
+
+// ---------------- 关于（M6） ----------------
+
+function AboutSection() {
+  const [about, setAbout] = useState<AppAbout | null>(null)
+  useEffect(() => {
+    void api.about().then(setAbout).catch(() => setAbout(null))
+  }, [])
+  if (!about) return null
+  const envLabel = `${about.platform}/${about.arch} · ${about.packaged ? '安装包' : '开发态'}`
+  return (
+    <details className="rounded-lg border border-line">
+      <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-ink2">
+        关于 Lumen Desk
+      </summary>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 px-3 pb-3 pt-1 text-xs leading-relaxed text-ink2">
+        <dt className="text-ink2/70">版本</dt>
+        <dd className="font-mono">{about.version}</dd>
+        <dt className="text-ink2/70">环境</dt>
+        <dd>{envLabel}</dd>
+        <dt className="text-ink2/70">Electron</dt>
+        <dd className="font-mono">{about.electronVersion}</dd>
+        <dt className="text-ink2/70">Chromium</dt>
+        <dd className="font-mono">{about.chromeVersion}</dd>
+        <dt className="text-ink2/70">Node</dt>
+        <dd className="font-mono">{about.nodeVersion}</dd>
+      </dl>
+    </details>
   )
 }
 
