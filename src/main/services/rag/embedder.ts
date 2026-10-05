@@ -21,6 +21,8 @@ interface EmbeddingDeps {
   cloudApiKey: string | null
 }
 
+export type { EmbeddingDeps }
+
 interface CachedVector {
   m: string
   d: number
