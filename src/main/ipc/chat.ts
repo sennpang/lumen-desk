@@ -12,6 +12,7 @@ import { getSettings } from '../services/settings/repo'
 import { getCloudApiKey } from '../store/secrets'
 import { streamChatCompletion } from '../services/llm/client'
 import { compactIfNeeded, estimateTokens } from '../services/llm/context'
+import { resolveModelConfig } from '../services/llm/resolve'
 import type { RunPayload, StreamEvent } from '../../shared/protocol'
 
 /**
@@ -39,18 +40,22 @@ async function executeRun(
   payload: RunPayload
 ): Promise<void> {
   const settings = getSettings()
-  const apiKey = getCloudApiKey()
+  const cloudApiKey = getCloudApiKey()
 
-  // 1. 会话（不传 id 则隐式新建）
+  // 解析本次使用的模型配置（云端 / Ollama 统一归一化为 OpenAI 兼容配置）
+  const resolved = resolveModelConfig(settings, cloudApiKey)
+  const modelLabel = resolved.ok ? resolved.config.model : settings.model
+
+  // 1. 会话（不传 id 则隐式新建），记录当时实际使用的模型
   const conversationId =
-    payload.conversationId ?? createConversation(payload.mode, settings.model).id
+    payload.conversationId ?? createConversation(payload.mode, modelLabel).id
 
   // 2. 用户消息先落库（写入前持久化，PRD 第 6 章：崩溃不丢）
   const userMsg = addMessage({ conversationId, role: 'user', content: payload.message })
   if (userMsg.seq === 1) {
     autoTitleFromFirstMessage(conversationId, payload.message)
   }
-  touchConversation(conversationId, settings.model)
+  touchConversation(conversationId, modelLabel)
 
   // 3. assistant 占位消息（streaming 状态先落库）
   const assistantMsg = addMessage({
@@ -67,21 +72,18 @@ async function executeRun(
     emit(target, { type: 'error', streamId, message })
   }
 
-  if (settings.provider === 'local') {
-    fail('本地模型（Ollama）将在 M2 里程碑支持，当前请先在设置中使用云端模型。')
+  if (!resolved.ok) {
+    fail(resolved.message)
     return
   }
-  if (!apiKey) {
-    fail('尚未配置 API Key，请先在「设置」中填写并保存。')
-    return
-  }
+  const modelConfig = resolved.config
 
   // 4. 组装上下文：system + 历史 + 本轮，超限先压缩（F-A2）
   let history = buildChatHistory(conversationId)
   try {
     history = await compactIfNeeded(history, settings, {
-      baseUrl: settings.baseUrl,
-      apiKey
+      baseUrl: modelConfig.baseUrl,
+      apiKey: modelConfig.apiKey
     })
   } catch (e) {
     // 摘要失败不应阻断主流程：降级为用未压缩历史直接请求
@@ -101,9 +103,9 @@ async function executeRun(
   let completionTokens = 0
   try {
     const gen = streamChatCompletion({
-      baseUrl: settings.baseUrl,
-      apiKey,
-      model: settings.model,
+      baseUrl: modelConfig.baseUrl,
+      apiKey: modelConfig.apiKey,
+      model: modelConfig.model,
       temperature: settings.temperature,
       messages,
       signal: controller.signal
@@ -127,7 +129,7 @@ async function executeRun(
       status: 'done',
       tokens: completionTokens || estimateTokens(answer)
     })
-    touchConversation(conversationId, settings.model)
+    touchConversation(conversationId, modelConfig.model)
     emit(target, {
       type: 'done',
       streamId,
