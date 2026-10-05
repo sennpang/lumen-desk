@@ -1,3 +1,23 @@
+@import 'tailwindcss';
+
+/*
+ * Tailwind v4 主题定制：用 @theme 注册设计 token，
+ * 类名如 bg-paper/text-ink/border-line 由这里生成。
+ * 配色沿用 PRD 文档的"纸感 + 青绿"基调。
+ */
+@theme {
+  --color-paper: #fbf8ef;
+  --color-ink: #26231c;
+  --color-ink2: #5a5547;
+  --color-line: #e6e0cf;
+  --color-card: #ffffff;
+  --color-brand: #0d9488;
+  --color-brand-dark: #0f766e;
+  --color-brand-bg: #e6f4f2;
+  --color-danger: #b91c1c;
+  --color-danger-bg: #fdecec;
+}
+
 :root {
   color-scheme: light;
   font-family:
