@@ -1,0 +1,33 @@
+# electron-builder 打包配置（PRD 第 19 章）
+appId: com.lumendesk.app
+productName: Lumen Desk
+directories:
+  buildResources: resources
+  output: dist
+
+files:
+  - out/**
+  - package.json
+  # 排除测试与源码地图，控制安装包体积
+  - "!**/*.map"
+  - "!**/*.test.*"
+
+# 原生模块（better-sqlite3 / hnswlib-node 后续引入）需按 Electron ABI 重编译
+npmRebuild: true
+
+asar: true
+
+win:
+  target:
+    - nsis
+  artifactName: ${productName}-Setup-${version}-x64.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
+  artifactName: ${productName}-${version}-${arch}.${ext}
