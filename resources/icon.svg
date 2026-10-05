@@ -1,38 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <!-- Lumen Desk 应用图标：品牌 teal 圆角底 + 被灯光照亮的打开书本
-       意象：知识（书）被 AI（光）点亮；几何全矢量，任意尺寸清晰 -->
-  <rect x="64" y="64" width="896" height="896" rx="200" fill="#0d9488"/>
-
-  <!-- 灯泡光芒（暖白） -->
-  <g stroke="#fef3c7" stroke-width="24" stroke-linecap="round">
-    <line x1="512" y1="222" x2="512" y2="176"/>
-    <line x1="624" y1="268" x2="657" y2="235"/>
-    <line x1="670" y1="380" x2="716" y2="380"/>
-    <line x1="400" y1="268" x2="367" y2="235"/>
-    <line x1="354" y1="380" x2="308" y2="380"/>
-  </g>
-
-  <!-- 光束：灯罩洒向书页的暖光 -->
-  <path d="M452 500 L572 500 L692 744 L332 744 Z" fill="#fde68a" opacity="0.5"/>
-
-  <!-- 灯泡 -->
-  <circle cx="512" cy="372" r="120" fill="#ffffff"/>
-  <!-- 灯头（螺口） -->
-  <rect x="456" y="474" width="112" height="56" rx="14" fill="#ffffff"/>
-  <g stroke="#0d9488" stroke-width="9" stroke-linecap="round">
-    <line x1="470" y1="492" x2="554" y2="492"/>
-    <line x1="470" y1="512" x2="554" y2="512"/>
-  </g>
-
-  <!-- 打开的书本 -->
-  <path d="M246 664 Q512 590 778 664 L778 804 Q512 730 246 804 Z" fill="#ffffff"/>
-  <!-- 书脊中缝 -->
-  <path d="M512 626 L512 768" stroke="#0f766e" stroke-width="11" stroke-linecap="round"/>
-  <!-- 书页线 -->
-  <g stroke="#5eead4" stroke-width="9" stroke-linecap="round" opacity="0.9">
-    <line x1="310" y1="688" x2="456" y2="666"/>
-    <line x1="310" y1="724" x2="456" y2="702"/>
-    <line x1="568" y1="666" x2="714" y2="688"/>
-    <line x1="568" y1="702" x2="714" y2="724"/>
-  </g>
+  <!-- Lumen Desk 应用图标（设计方向 E：Lumen 字标）
+       墨黑暖底 + 米白字母 L（竖笔即灯柱）+ 琥珀灯点。
+       刻意不用渐变/光晕/星光等模板化装饰：小尺寸（Dock 16px）
+       下只有强对比的几何笔画才清晰；琥珀圆点把 L 点成"亮着的灯"，
+       完成 Lumen（光）的隐喻。 -->
+  <rect x="48" y="48" width="928" height="928" rx="224" fill="#23201a"/>
+  <!-- 极细内边框：徽标感，透明度极低避免缩小后显脏 -->
+  <rect x="88" y="88" width="848" height="848" rx="190" fill="none"
+        stroke="#f8f2e4" stroke-opacity=".14" stroke-width="4"/>
+  <!-- 字母 L：圆头粗笔，竖笔同时是灯柱 -->
+  <path d="M376,272 V684 Q376,714 406,714 H696"
+        fill="none" stroke="#f8f2e4" stroke-width="112"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 灯：竖笔顶端的琥珀光点 -->
+  <circle cx="376" cy="206" r="54" fill="#f59e0b"/>
 </svg>
