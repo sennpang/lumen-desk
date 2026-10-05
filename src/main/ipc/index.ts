@@ -3,6 +3,8 @@ import { registerConversationHandlers } from './conversation'
 import { registerChatHandlers } from './chat'
 import { registerSettingsHandlers } from './settings'
 import { registerOllamaHandlers } from './ollama'
+import { registerKbHandlers } from './knowledge'
+import { registerDialogHandlers } from './dialog'
 
 /**
  * IPC 处理器注册中心（PRD 第 13 章：IPC 接口规范）
@@ -20,6 +22,8 @@ export function registerIpcHandlers(): void {
   registerChatHandlers()
   registerSettingsHandlers()
   registerOllamaHandlers()
+  registerKbHandlers()
+  registerDialogHandlers()
 
   // M0 健康检查：验证渲染进程 -> 主进程的 invoke 链路已打通
   ipcMain.handle('app:ping', () => {
