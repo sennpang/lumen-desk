@@ -21,8 +21,14 @@ export function App() {
   useEffect(() => {
     window.api
       .ping()
-      .then(setPong)
-      .catch((e: unknown) => setError(String(e)))
+      .then((res) => {
+        console.log('[M0] app:ping 返回：', res)
+        setPong(res)
+      })
+      .catch((e: unknown) => {
+        console.error('[M0] app:ping 失败：', e)
+        setError(String(e))
+      })
   }, [])
 
   return (
