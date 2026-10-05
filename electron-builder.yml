@@ -1,6 +1,7 @@
 # electron-builder 打包配置（PRD 第 19 章）
 appId: com.lumendesk.app
 productName: Lumen Desk
+copyright: Copyright © 2026 Lumen Desk
 directories:
   buildResources: resources
   output: dist
@@ -12,10 +13,27 @@ files:
   - "!**/*.map"
   - "!**/*.test.*"
 
-# 原生模块（better-sqlite3 / hnswlib-node 后续引入）需按 Electron ABI 重编译
+# 原生模块（better-sqlite3 / hnswlib-node）必须排除出 asar 包：
+# .node 是动态链接库，要按真实文件路径 dlopen，放在 asar 内会被
+# 映射成虚拟路径导致加载失败。electron-builder 会把它们原样放到
+# app.asar.unpacked 并在 asar 中留下解包标记，require 自动重定向。
+asarUnpack:
+  - "**/node_modules/better-sqlite3/**"
+  - "**/node_modules/hnswlib-node/**"
+
+# 原生模块需按 Electron ABI 重编译（postinstall 已跑 install-app-deps）
 npmRebuild: true
 
 asar: true
+
+# 只打包中英文语言包，砍掉 Electron 自带的几十种 .pak（省十几 MB）
+electronLanguages:
+  - zh-CN
+  - en
+
+# 本地学习项目：无 Apple Developer 账号，显式跳过代码签名，
+# 产出可本机运行/拷给同事的 ad-hoc 包；将来上架再补 identity + 公证。
+publish: null
 
 win:
   target:
@@ -25,9 +43,22 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  perMachine: false
 
 mac:
+  # dmg 给人拖拽安装；zip 给自动更新/内网分发留位（electron-updater 消费 zip）
   target:
     - dmg
+    - zip
   category: public.app-category.productivity
+  identity: null
   artifactName: ${productName}-${version}-${arch}.${ext}
+
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications

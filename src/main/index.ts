@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, Menu, shell } from 'electron'
 import { join } from 'node:path'
 import { ensureDataDirs } from './paths'
 import { initDb, closeDb } from './db/sqlite'
@@ -11,6 +11,22 @@ import { registerIpcHandlers } from './ipc'
  * - 主进程 = Node.js 环境，独占密钥/文件系统/网络/数据库
  * - 渲染进程 = Chromium 网页，只做 UI，通过 preload 白名单桥与主进程通信
  */
+
+// 单实例锁（PRD 交付质量）：桌面应用重复点击图标应唤起已有窗口，
+// 而不是启动第二个进程去抢同一个 SQLite（WAL 虽允许多连接，但两个
+// 应用实例会让后台导入/Agent 任务与托盘行为全部重复）。
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (!win) return
+    if (win.isMinimized()) void win.restore()
+    win.show()
+    win.focus()
+  })
+}
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -25,7 +41,9 @@ function createWindow(): void {
       // 安全三件套（PRD 第 17 章，Electron 官方强推荐）：
       contextIsolation: true, // 渲染进程与 preload 的 JS 世界隔离，网页摸不到 bridge 内部
       nodeIntegration: false, // 渲染进程禁止直接使用 Node API
-      sandbox: false // preload 里要用 ipcRenderer，需关闭 sandbox（contextIsolation 仍生效）
+      sandbox: false, // preload 里要用 ipcRenderer，需关闭 sandbox（contextIsolation 仍生效）
+      // 打包后不暴露 DevTools 给普通用户（dev/preview 不受影响，仍可菜单/快捷键打开）
+      devTools: !app.isPackaged
     }
   })
 
@@ -43,21 +61,35 @@ function createWindow(): void {
 
   // 外部链接一律交给系统浏览器，绝不在应用内打开第三方页面
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
+  })
+
+  // 导航加固：应用是单页壳，任何整页导航（含被注入的
+  // window.location/恶意 <a target=_self>）都拒绝；外链改由上面的
+  // openExternal 通道处理，http(s) 放行到系统浏览器，其余静默拦截。
+  win.webContents.on('will-navigate', (event, url) => {
+    if (url !== win.webContents.getURL()) {
+      event.preventDefault()
+      if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
+    }
   })
 
   // electron-vite 约定：开发模式注入 ELECTRON_RENDERER_URL（Vite Dev Server 地址，支持 HMR）；
   // 生产模式加载构建产物 out/renderer/index.html
   if (process.env['ELECTRON_RENDERER_URL']) {
-    win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    void win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    win.loadFile(join(__dirname, '../renderer/index.html'))
+    void win.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
 
 // Electron 就绪后才能创建窗口 / 访问 userData
 app.whenReady().then(() => {
+  // 打包后移除默认应用菜单（File/Edit/View…，含"重新加载/开发者工具"），
+  // 桌面产品不应露出 Chromium 调试入口；开发态保留以便调试。
+  if (app.isPackaged) Menu.setApplicationMenu(null)
+
   ensureDataDirs()
   initDb()
   registerIpcHandlers()
