@@ -66,7 +66,16 @@ const api = {
       ipcRenderer.invoke('settings:save', input),
     /** 测试"已保存"的配置；失败时 Promise reject 携带错误信息 */
     testConnection: (): Promise<{ ok: true }> =>
-      ipcRenderer.invoke('settings:test')
+      ipcRenderer.invoke('settings:test'),
+    /** M6 导出非密设置到 JSON 文件（取消时 canceled=true） */
+    exportBackup: (): Promise<{ canceled: boolean; path?: string }> =>
+      ipcRenderer.invoke('settings:export'),
+    /** M6 从 JSON 导入设置；hadApiKey 提示备份机器上曾配置密钥（不随备份迁移） */
+    importBackup: (): Promise<{
+      canceled: boolean
+      hadApiKey?: boolean
+      view?: SettingsView
+    }> => ipcRenderer.invoke('settings:import')
   },
 
   ollama: {

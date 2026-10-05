@@ -315,6 +315,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             </p>
           )}
 
+          <BackupSection onImported={() => void load()} />
           <AboutSection />
         </div>
 
@@ -335,6 +336,84 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           </button>
         </footer>
       </div>
+    </div>
+  )
+}
+
+// ---------------- 备份与恢复（M6） ----------------
+
+function BackupSection({ onImported }: { onImported: () => void }) {
+  const [busy, setBusy] = useState<'export' | 'import' | null>(null)
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+
+  const handleExport = async () => {
+    setBusy('export')
+    setMsg(null)
+    try {
+      const r = await api.settings.exportBackup()
+      if (!r.canceled) setMsg({ kind: 'ok', text: `已导出到：${r.path}` })
+    } catch (e) {
+      setMsg({ kind: 'err', text: `导出失败：${(e as Error).message}` })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleImport = async () => {
+    setBusy('import')
+    setMsg(null)
+    try {
+      const r = await api.settings.importBackup()
+      if (r.canceled) return
+      onImported()
+      setMsg({
+        kind: 'ok',
+        text: r.hadApiKey
+          ? '设置已导入。API Key 不随备份迁移，请重新填写并保存。'
+          : '设置已导入并生效。'
+      })
+    } catch (e) {
+      setMsg({ kind: 'err', text: `导入失败：${(e as Error).message}` })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-line p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-medium text-ink">备份与恢复</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-ink2">
+            导出模型地址、参数、系统提示词等配置；API Key 与知识库内容不包含在备份中。
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <button
+            onClick={() => void handleImport()}
+            disabled={busy !== null}
+            className="rounded-md border border-line px-2.5 py-1 text-xs text-ink hover:bg-paper disabled:opacity-40"
+          >
+            {busy === 'import' ? '导入中…' : '导入'}
+          </button>
+          <button
+            onClick={() => void handleExport()}
+            disabled={busy !== null}
+            className="rounded-md border border-line px-2.5 py-1 text-xs text-ink hover:bg-paper disabled:opacity-40"
+          >
+            {busy === 'export' ? '导出中…' : '导出'}
+          </button>
+        </div>
+      </div>
+      {msg && (
+        <p
+          className={`mt-2 break-all rounded px-2 py-1 text-[11px] ${
+            msg.kind === 'ok' ? 'bg-brand-bg text-brand-dark' : 'bg-danger-bg text-danger'
+          }`}
+        >
+          {msg.text}
+        </p>
+      )}
     </div>
   )
 }

@@ -107,6 +107,19 @@ export interface AppAbout {
   packaged: boolean
 }
 
+/**
+ * 设置备份文件结构（M6 settings:export/import）。
+ * 只含非密配置：云端 API Key 走系统密钥设施（Keychain/DPAPI），
+ * 换机器/重装后无法解密，导出既无意义也有泄露风险，故只记录标记。
+ */
+export interface SettingsBackup {
+  kind: 'lumen-desk-settings'
+  appVersion: string
+  exportedAt: number
+  settings: AppSettings
+  hasApiKey: boolean
+}
+
 /** embedding 向量化来源（可独立于对话模型选择） */
 export type EmbeddingProvider = 'ollama' | 'cloud'
 

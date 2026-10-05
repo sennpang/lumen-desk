@@ -62,3 +62,38 @@ export function saveSettings(settings: AppSettings): void {
 export function setProvider(provider: ModelProvider): void {
   saveSettings({ ...getSettings(), provider })
 }
+
+/**
+ * 从备份文件清洗出一份合法 AppSettings（M6 导入备份）。
+ * 不信任文件内容：逐字段按类型/枚举校验，非法或缺字段一律回退默认值，
+ * 且只挑已知字段，杜绝备份里夹带的额外键污染配置表。
+ */
+export function sanitizeSettings(raw: unknown): AppSettings {
+  const d = DEFAULT_SETTINGS
+  if (!raw || typeof raw !== 'object') throw new Error('备份内容不是有效的设置对象')
+  const r = raw as Record<string, unknown>
+  const str = (v: unknown, fallback: string): string =>
+    typeof v === 'string' ? v : fallback
+  const num = (v: unknown, fallback: number): number =>
+    typeof v === 'number' && Number.isFinite(v) ? v : fallback
+  return {
+    provider: r.provider === 'cloud' || r.provider === 'local' ? r.provider : d.provider,
+    baseUrl: str(r.baseUrl, d.baseUrl),
+    model: str(r.model, d.model),
+    ollamaUrl: str(r.ollamaUrl, d.ollamaUrl),
+    ollamaModel: str(r.ollamaModel, d.ollamaModel),
+    embeddingProvider:
+      r.embeddingProvider === 'ollama' || r.embeddingProvider === 'cloud'
+        ? r.embeddingProvider
+        : d.embeddingProvider,
+    ollamaEmbedModel: str(r.ollamaEmbedModel, d.ollamaEmbedModel),
+    cloudEmbedModel: str(r.cloudEmbedModel, d.cloudEmbedModel),
+    hybridSearchEnabled:
+      typeof r.hybridSearchEnabled === 'boolean'
+        ? r.hybridSearchEnabled
+        : d.hybridSearchEnabled,
+    temperature: num(r.temperature, d.temperature),
+    systemPrompt: str(r.systemPrompt, d.systemPrompt),
+    maxContextTokens: Math.floor(num(r.maxContextTokens, d.maxContextTokens))
+  }
+}

@@ -1,10 +1,16 @@
-import { ipcMain } from 'electron'
-import { getSettings, getSettingsView, saveSettings } from '../services/settings/repo'
-import { getCloudApiKey, saveCloudApiKey } from '../store/secrets'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { readFileSync, writeFileSync } from 'node:fs'
+import {
+  getSettings,
+  getSettingsView,
+  sanitizeSettings,
+  saveSettings
+} from '../services/settings/repo'
+import { getCloudApiKey, hasCloudApiKey, saveCloudApiKey } from '../store/secrets'
 import { testConnection } from '../services/llm/client'
 import { detectOllama } from '../services/llm/ollama'
 import { resolveModelConfig } from '../services/llm/resolve'
-import type { SaveSettingsInput } from '../../shared/types'
+import type { SaveSettingsInput, SettingsBackup } from '../../shared/types'
 
 /**
  * 设置 IPC（F-B1：配置 API Base/Key/模型，Key 安全存储，连接可测试）
@@ -51,5 +57,54 @@ export function registerSettingsHandlers(): void {
       model: resolved.config.model
     })
     return { ok: true as const }
+  })
+
+  // M6 备份：导出非密配置到用户自选 JSON 文件
+  ipcMain.handle('settings:export', async () => {
+    const win = BrowserWindow.getFocusedWindow() ?? undefined
+    const stamp = new Date().toISOString().slice(0, 10)
+    const result = await dialog.showSaveDialog(win!, {
+      title: '导出 Lumen Desk 设置',
+      defaultPath: `lumen-desk-settings-${stamp}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (result.canceled || !result.filePath) return { canceled: true as const }
+    const backup: SettingsBackup = {
+      kind: 'lumen-desk-settings',
+      appVersion: app.getVersion(),
+      exportedAt: Date.now(),
+      settings: getSettings(),
+      hasApiKey: hasCloudApiKey()
+    }
+    writeFileSync(result.filePath, JSON.stringify(backup, null, 2), 'utf8')
+    return { canceled: false as const, path: result.filePath }
+  })
+
+  // M6 恢复：从 JSON 读回配置（密钥不迁移，仅提示用户重新填写）
+  ipcMain.handle('settings:import', async () => {
+    const win = BrowserWindow.getFocusedWindow() ?? undefined
+    const result = await dialog.showOpenDialog(win!, {
+      title: '导入 Lumen Desk 设置',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true as const }
+    const parsed: unknown = JSON.parse(readFileSync(result.filePaths[0], 'utf8'))
+    // 结构校验：kind 不对就明确报错，防止用户误选其他 JSON
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      (parsed as { kind?: unknown }).kind !== 'lumen-desk-settings'
+    ) {
+      throw new Error('这不是 Lumen Desk 的设置备份文件（缺少 kind 标识）。')
+    }
+    const incoming = sanitizeSettings((parsed as SettingsBackup).settings)
+    saveSettings(incoming)
+    return {
+      canceled: false as const,
+      hadApiKey: Boolean((parsed as SettingsBackup).hasApiKey),
+      // 返回清洗后视图，供渲染端立即刷新表单
+      view: getSettingsView()
+    }
   })
 }
