@@ -1,0 +1,39 @@
+# 日常质量门：推送到 main 或提 PR 时验证"代码始终是可发布状态"。
+# 只做静态检查与三端构建（不打包），最快暴露类型错误与构建断裂。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 同一分支连续推送时取消旧的检查，省额度
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # postinstall 会跑 electron-builder install-app-deps 重编译原生模块，
+      # ubuntu runner 自带 python3/build-essential，可直接编译；
+      # CI 在 GitHub 网络内，Electron 二进制走默认源即可，不需要 .npmrc 镜像。
+      - name: 安装依赖（严格按 lockfile）
+        run: npm ci
+
+      - name: 类型检查（main + renderer 双 tsconfig）
+        run: npm run typecheck
+
+      - name: 三端构建（main / preload / renderer）
+        run: npm run build
