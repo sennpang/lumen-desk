@@ -1,0 +1,113 @@
+# 发布流水线：推送 v* 标签（如 v0.2.0）即三平台并行打包，
+# 产物自动挂到该标签的 GitHub Release。
+#
+# 本机等价命令：
+#   npm run build && npx electron-builder --mac --arm64 --publish never
+#   npm run build && npx electron-builder --win --x64   --publish never
+#
+# 注意：均为未签名包（项目无 Apple Developer / Windows 代码签名证书）。
+# macOS 用户首次打开需右键 → 打开；Windows 用户会看到 SmartScreen 提示，
+# 点"更多信息 → 仍要运行"。
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  # softprops/action-gh-release 上传产物需要对 Release 的写权限
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # 一个平台失败不影响另外两个平台出包
+      matrix:
+        include:
+          # 用原生 runner 对应架构，避免交叉编译原生模块的坑：
+          # macos-14 是 Apple 芯片，macos-13 是 Intel
+          - os: macos-14
+            builder-args: --mac --arm64
+            asset-glob: |
+              dist/*.dmg
+              dist/*.zip
+          - os: macos-13
+            builder-args: --mac --x64
+            asset-glob: |
+              dist/*.dmg
+              dist/*.zip
+          - os: windows-latest
+            builder-args: --win --x64
+            asset-glob: |
+              dist/*.exe
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Electron 二进制与 builder 依赖体积大，按平台缓存加速二次构建
+      - name: 缓存 Electron 与 builder 依赖（macOS）
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: electron-cache-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: 缓存 Electron 与 builder 依赖（Windows）
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: electron-cache-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: 安装依赖（严格按 lockfile，含原生模块 ABI 重编译）
+        run: npm ci
+
+      # 发版防呆：标签号必须与 package.json#version 一致，
+      # 否则打出来的安装包版本号和 Release 标题对不上
+      - name: 校验标签与 package.json 版本一致
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PKG_VER="v$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG_VER" ]; then
+            echo "::error::标签 $TAG 与 package.json 版本 $PKG_VER 不一致，请先改版本号再打标签"
+            exit 1
+          fi
+          echo "发布版本：$TAG（$RUNNER_OS / ${{ matrix.builder-args }}）"
+
+      - name: 构建三端 JS 产物
+        run: npm run build
+
+      # --publish never：只出包，让下一步统一上传 Release，
+      # 避免 builder 自己的发布探测（本地配置为 publish: null，双保险）
+      - name: electron-builder 打包
+        shell: bash
+        run: npx electron-builder ${{ matrix.builder-args }} --publish never
+
+      - name: 列出产物（排障可见）
+        shell: bash
+        run: ls -lh dist/ || true
+
+      - name: 上传到 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # 同名 Release 已被其他平台任务创建时，本步骤只追加文件
+          files: ${{ matrix.asset-glob }}
+          # 根据 PR 合并记录自动生成变更摘要（无则为空，不影响发布）
+          generate_release_notes: true
+          # 未签名包必须显式取消 prerelease 的误判，按正式 Release 发布；
+          # 预发布标签（v0.2.0-rc1）自动识别为 prerelease
+          prerelease: ${{ contains(github.ref_name, '-') }}
