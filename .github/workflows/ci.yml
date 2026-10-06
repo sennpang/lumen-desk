@@ -35,5 +35,12 @@ jobs:
       - name: 类型检查（main + renderer 双 tsconfig）
         run: npm run typecheck
 
+      # 冒烟测试以 ELECTRON_RUN_AS_NODE 跑在 Electron 内置 Node 上：
+      # npm ci 的 postinstall 已把 better-sqlite3/hnswlib-node 重编到
+      # Electron ABI，用系统 Node 反而会 NODE_MODULE_VERSION 不匹配。
+      # 用例只覆盖 SQLite/检索/切分/备份纯本地逻辑，不依赖网络与 Ollama。
+      - name: 冒烟测试（node:test，无需 Ollama）
+        run: npm test
+
       - name: 三端构建（main / preload / renderer）
         run: npm run build

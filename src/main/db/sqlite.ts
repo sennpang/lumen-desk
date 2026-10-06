@@ -90,3 +90,20 @@ export function closeDb(): void {
   db?.close()
   db = null
 }
+
+/**
+ * 测试专用引导：把全局单例换成外部传入的连接（tests/ 冒烟测试用临时库）。
+ * 与 initDb() 走完全相同的 PRAGMA + 建表 + 迁移路径，保证测的是真实 schema。
+ * 生产代码不要调用——应用启动路径永远是 initDb()。
+ */
+export function __bootstrapDbForTests(conn: DatabaseType): DatabaseType {
+  db?.close()
+  db = conn
+  conn.pragma('journal_mode = WAL')
+  conn.pragma('foreign_keys = ON')
+  conn.pragma('synchronous = NORMAL')
+  conn.pragma('busy_timeout = 5000')
+  conn.exec(schemaSql)
+  runMigrations(conn)
+  return conn
+}
