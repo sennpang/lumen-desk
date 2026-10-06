@@ -5,6 +5,7 @@ import { registerSettingsHandlers } from './settings'
 import { registerOllamaHandlers } from './ollama'
 import { registerKbHandlers } from './knowledge'
 import { registerDialogHandlers } from './dialog'
+import { registerDataHandlers } from './data'
 import { dismissOnboarding, getUiMeta } from '../services/uiMeta'
 
 /**
@@ -25,6 +26,7 @@ export function registerIpcHandlers(): void {
   registerOllamaHandlers()
   registerKbHandlers()
   registerDialogHandlers()
+  registerDataHandlers()
 
   // M0 健康检查：验证渲染进程 -> 主进程的 invoke 链路已打通
   ipcMain.handle('app:ping', () => {

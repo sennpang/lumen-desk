@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { getDb } from '../../db/sqlite'
 import type {
+  AgentStepBackup,
   ChatMode,
   CitationRef,
+  ConversationBackup,
   ConversationInfo,
   ChatMessage,
+  MessageBackup,
   MessageRecord,
   MessageRole,
   MessageSearchHit,
@@ -290,6 +293,139 @@ export function buildChatHistory(conversationId: string): ChatMessage[] {
   return listMessages(conversationId)
     .filter((m) => m.status === 'done' && m.role !== 'tool')
     .map((m) => ({ role: m.role, content: m.content }))
+}
+
+// ---------------- 全量备份导出 / 导入 ----------------
+
+/**
+ * 一次性导出全部会话（消息 + Agent 步骤）。
+ * 三条 SELECT 拼内存结构，避免每会话/每消息 N+1。
+ */
+export function exportConversationsForBackup(): ConversationBackup[] {
+  const db = getDb()
+  const convRows = db
+    .prepare('SELECT * FROM conversation ORDER BY created_at')
+    .all() as ConversationRow[]
+  const msgRows = db
+    .prepare('SELECT * FROM message ORDER BY conversation_id, seq')
+    .all() as MessageRow[]
+  const stepRows = db
+    .prepare('SELECT * FROM agent_step ORDER BY message_id, seq')
+    .all() as Array<{
+    id: string
+    message_id: string
+    seq: number
+    step_type: string
+    tool_name: string | null
+    args: string | null
+    result: string | null
+    confirm_id: string | null
+    confirm_status: string | null
+    created_at: number
+  }>
+
+  const stepsByMsg = new Map<string, AgentStepBackup[]>()
+  for (const s of stepRows) {
+    const list = stepsByMsg.get(s.message_id) ?? []
+    list.push({
+      id: s.id,
+      seq: s.seq,
+      stepType: s.step_type,
+      toolName: s.tool_name,
+      args: s.args,
+      result: s.result,
+      confirmId: s.confirm_id,
+      confirmStatus: s.confirm_status,
+      createdAt: s.created_at
+    })
+    stepsByMsg.set(s.message_id, list)
+  }
+
+  const msgsByConv = new Map<string, MessageBackup[]>()
+  for (const m of msgRows) {
+    const list = msgsByConv.get(m.conversation_id) ?? []
+    list.push({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      status: m.status,
+      tokens: m.tokens,
+      createdAt: m.created_at,
+      seq: m.seq,
+      meta: m.meta,
+      agentSteps: stepsByMsg.get(m.id) ?? []
+    })
+    msgsByConv.set(m.conversation_id, list)
+  }
+
+  return convRows.map((c) => ({
+    id: c.id,
+    title: c.title,
+    createdAt: c.created_at,
+    updatedAt: c.updated_at,
+    mode: c.mode as ChatMode,
+    modelId: c.model_id,
+    messages: msgsByConv.get(c.id) ?? []
+  }))
+}
+
+/**
+ * 导回一个会话（保留原 id：消息 meta 里的 RAG citation 指向备份内同 id
+ * 的 chunk，重新生成 id 会让引用全部失效）。
+ * @returns true=已导入；false=同 id 会话已存在，整组跳过（重复导入/合并场景）
+ */
+export function importConversationBackup(c: ConversationBackup): boolean {
+  const db = getDb()
+  const exists = db
+    .prepare('SELECT id FROM conversation WHERE id = ?')
+    .get(c.id) as { id: string } | undefined
+  if (exists) return false
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO conversation(id, title, created_at, updated_at, mode, model_id)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(c.id, c.title, c.createdAt, c.updatedAt, c.mode, c.modelId)
+
+    const insertMsg = db.prepare(
+      `INSERT INTO message(id, conversation_id, role, content, status, tokens, created_at, seq, meta)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    const insertStep = db.prepare(
+      `INSERT INTO agent_step
+         (id, message_id, seq, step_type, tool_name, args, result, confirm_id, confirm_status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    for (const m of c.messages) {
+      insertMsg.run(
+        m.id,
+        c.id,
+        m.role,
+        m.content,
+        m.status,
+        m.tokens,
+        m.createdAt,
+        m.seq,
+        m.meta
+      )
+      for (const s of m.agentSteps) {
+        insertStep.run(
+          s.id,
+          m.id,
+          s.seq,
+          s.stepType,
+          s.toolName,
+          s.args,
+          s.result,
+          s.confirmId,
+          s.confirmStatus,
+          s.createdAt
+        )
+      }
+    }
+  })
+  tx()
+  return true
 }
 
 /** 重新生成：取会话中最后一条用户消息（作为重发的内容） */

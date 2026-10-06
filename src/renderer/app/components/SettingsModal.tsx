@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useSettings } from '../stores/useSettings'
+import { useConversations } from '../stores/useConversations'
+import { useKnowledge } from '../stores/useKnowledge'
 import { api } from '../lib/ipc'
 import type { AppAbout, OllamaModelInfo, OllamaStatus } from '../../../shared/types'
 
@@ -316,6 +318,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           )}
 
           <BackupSection onImported={() => void load()} />
+          <DataBackupSection />
           <AboutSection />
         </div>
 
@@ -408,6 +411,108 @@ function BackupSection({ onImported }: { onImported: () => void }) {
       {msg && (
         <p
           className={`mt-2 break-all rounded px-2 py-1 text-[11px] ${
+            msg.kind === 'ok' ? 'bg-brand-bg text-brand-dark' : 'bg-danger-bg text-danger'
+          }`}
+        >
+          {msg.text}
+        </p>
+      )}
+    </div>
+  )
+}
+
+// ---------------- 全量数据备份（会话 + 知识库） ----------------
+
+function DataBackupSection() {
+  const [busy, setBusy] = useState<'export' | 'import' | null>(null)
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+
+  const handleExport = async () => {
+    setBusy('export')
+    setMsg(null)
+    try {
+      const r = await api.data.exportAll()
+      if (!r.canceled) {
+        setMsg({
+          kind: 'ok',
+          text: `已导出 ${r.conversations} 个会话、${r.knowledgeBases} 个知识库到：${r.path}`
+        })
+      }
+    } catch (e) {
+      setMsg({ kind: 'err', text: `导出失败：${(e as Error).message}` })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleImport = async () => {
+    // 非破坏式合并（同 id 跳过），但仍明确告知会写入数据且向量需重建
+    if (
+      !window.confirm(
+        '将从备份文件恢复会话与知识库文本（重复内容会自动跳过）。' +
+          'API Key 不包含在内；知识库语义索引需导入后手动重建。继续吗？'
+      )
+    ) {
+      return
+    }
+    setBusy('import')
+    setMsg(null)
+    try {
+      const r = await api.data.importAll()
+      if (r.canceled) return
+      // 刷新各 store 缓存，让新会话/新库立即可见
+      await Promise.all([
+        useConversations.getState().refreshList(),
+        useKnowledge.getState().init()
+      ])
+      const s = r.summary
+      const parts = [
+        `已导入会话 ${s.conversations.imported} 个（跳过 ${s.conversations.skipped}）`,
+        `知识库 ${s.knowledgeBases.imported} 个（跳过 ${s.knowledgeBases.skipped}），文档 ${s.knowledgeBases.documents} 个、片段 ${s.knowledgeBases.chunks} 条`
+      ]
+      if (s.reindexKbIds.length > 0) {
+        parts.push(
+          `有 ${s.reindexKbIds.length} 个知识库需在知识库页点「重建索引」后才能进行语义检索（关键词搜索立即可用）`
+        )
+      }
+      setMsg({ kind: 'ok', text: parts.join('；') })
+    } catch (e) {
+      setMsg({ kind: 'err', text: `导入失败：${(e as Error).message}` })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-line p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-medium text-ink">全部数据备份</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-ink2">
+            导出全部对话记录与知识库文档片段，用于换电脑/重装迁移。
+            API Key 不导出；语义向量不导出（导入后重建索引即可）。
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <button
+            onClick={() => void handleImport()}
+            disabled={busy !== null}
+            className="rounded-md border border-line px-2.5 py-1 text-xs text-ink hover:bg-paper disabled:opacity-40"
+          >
+            {busy === 'import' ? '导入中…' : '导入数据'}
+          </button>
+          <button
+            onClick={() => void handleExport()}
+            disabled={busy !== null}
+            className="rounded-md border border-line px-2.5 py-1 text-xs text-ink hover:bg-paper disabled:opacity-40"
+          >
+            {busy === 'export' ? '导出中…' : '导出数据'}
+          </button>
+        </div>
+      </div>
+      {msg && (
+        <p
+          className={`mt-2 break-all rounded px-2 py-1 text-[11px] leading-relaxed ${
             msg.kind === 'ok' ? 'bg-brand-bg text-brand-dark' : 'bg-danger-bg text-danger'
           }`}
         >

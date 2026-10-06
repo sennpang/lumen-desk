@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { getDb } from '../../db/sqlite'
 import type {
+  ChunkBackup,
   ChunkInfo,
   ChunkMeta,
   DocStatus,
+  DocumentBackup,
   DocumentInfo,
+  KbBackup,
   KnowledgeBaseInfo
 } from '../../../shared/types'
 
@@ -328,4 +331,134 @@ function toChunkInfo(r: ChunkRow): ChunkInfo {
 
 export function newChunkId(): string {
   return randomUUID()
+}
+
+// ---------------- 全量备份导出 / 导入 ----------------
+
+/** 导出全部知识库（文档 + 片段文本/FTS 源）。向量索引不导出（可重建）。 */
+export function exportKbsForBackup(): KbBackup[] {
+  const db = getDb()
+  const kbRows = db
+    .prepare('SELECT id, name, created_at FROM knowledge_base ORDER BY created_at')
+    .all() as Array<{ id: string; name: string; created_at: number }>
+  const docRows = db
+    .prepare(
+      `SELECT id, kb_id, file_name, file_hash, status, chunk_count, error, created_at
+         FROM document ORDER BY created_at`
+    )
+    .all() as Array<{
+    id: string
+    kb_id: string
+    file_name: string
+    file_hash: string | null
+    status: string
+    chunk_count: number
+    error: string | null
+    created_at: number
+  }>
+  const chunkRows = db
+    .prepare(
+      'SELECT id, document_id, chunk_index, content, token_count, meta FROM chunk ORDER BY document_id, chunk_index'
+    )
+    .all() as Array<{
+    id: string
+    document_id: string
+    chunk_index: number
+    content: string
+    token_count: number | null
+    meta: string | null
+  }>
+
+  const chunksByDoc = new Map<string, ChunkBackup[]>()
+  for (const c of chunkRows) {
+    const list = chunksByDoc.get(c.document_id) ?? []
+    list.push({
+      id: c.id,
+      chunkIndex: c.chunk_index,
+      content: c.content,
+      tokenCount: c.token_count,
+      meta: c.meta
+    })
+    chunksByDoc.set(c.document_id, list)
+  }
+
+  const docsByKb = new Map<string, DocumentBackup[]>()
+  for (const d of docRows) {
+    const list = docsByKb.get(d.kb_id) ?? []
+    list.push({
+      id: d.id,
+      fileName: d.file_name,
+      fileHash: d.file_hash,
+      status: d.status,
+      chunkCount: d.chunk_count,
+      error: d.error,
+      createdAt: d.created_at,
+      chunks: chunksByDoc.get(d.id) ?? []
+    })
+    docsByKb.set(d.kb_id, list)
+  }
+
+  return kbRows.map((k) => ({
+    id: k.id,
+    name: k.name,
+    createdAt: k.created_at,
+    documents: docsByKb.get(k.id) ?? []
+  }))
+}
+
+/**
+ * 导回一个知识库（文档/片段/FTS 同步恢复，保留原 id 以维持
+ * 会话消息 citation 的引用有效）。
+ * 向量索引不随备份迁移：语义检索需之后对该库执行一次"重建索引"。
+ * @returns 导入计数；null 表示同 id 库已存在，整组跳过
+ */
+export function importKbBackup(
+  kb: KbBackup
+): { documents: number; chunks: number } | null {
+  const db = getDb()
+  const exists = db
+    .prepare('SELECT id FROM knowledge_base WHERE id = ?')
+    .get(kb.id) as { id: string } | undefined
+  if (exists) return null
+
+  let documents = 0
+  let chunks = 0
+  const tx = db.transaction(() => {
+    db.prepare(
+      'INSERT INTO knowledge_base(id, name, created_at) VALUES(?, ?, ?)'
+    ).run(kb.id, kb.name, kb.createdAt)
+
+    const insertDoc = db.prepare(
+      `INSERT INTO document(id, kb_id, file_name, file_hash, status, chunk_count, error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    const insertChunk = db.prepare(
+      `INSERT INTO chunk(id, document_id, chunk_index, content, token_count, meta)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    // 与 insertChunks 同约定：chunk 行与 FTS 同事务双写
+    const insertFts = db.prepare(
+      'INSERT INTO chunk_fts(content, chunk_id) VALUES(?, ?)'
+    )
+    for (const d of kb.documents) {
+      insertDoc.run(
+        d.id,
+        kb.id,
+        d.fileName,
+        d.fileHash,
+        d.status,
+        d.chunkCount,
+        d.error,
+        d.createdAt
+      )
+      documents += 1
+      for (const c of d.chunks) {
+        insertChunk.run(c.id, d.id, c.chunkIndex, c.content, c.tokenCount, c.meta)
+        insertFts.run(c.content, c.id)
+        chunks += 1
+      }
+    }
+  })
+  tx()
+  return { documents, chunks }
 }

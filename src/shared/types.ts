@@ -131,6 +131,91 @@ export interface SettingsBackup {
   hasApiKey: boolean
 }
 
+// ---------------- 全量数据备份（会话 + 知识库文本，不含向量/密钥） ----------------
+
+export interface AgentStepBackup {
+  id: string
+  seq: number
+  stepType: string
+  toolName: string | null
+  /** 原始 JSON 字符串，原样迁回 */
+  args: string | null
+  result: string | null
+  confirmId: string | null
+  confirmStatus: string | null
+  createdAt: number
+}
+
+export interface MessageBackup {
+  id: string
+  role: string
+  content: string
+  status: string
+  tokens: number | null
+  createdAt: number
+  seq: number
+  /** message.meta 原始 JSON（citations 等），原样迁回以保持引用可用 */
+  meta: string | null
+  agentSteps: AgentStepBackup[]
+}
+
+export interface ConversationBackup {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+  mode: ChatMode
+  modelId: string | null
+  messages: MessageBackup[]
+}
+
+export interface ChunkBackup {
+  id: string
+  chunkIndex: number
+  content: string
+  tokenCount: number | null
+  /** chunk.meta 原始 JSON（页码/标题路径等） */
+  meta: string | null
+}
+
+export interface DocumentBackup {
+  id: string
+  fileName: string
+  fileHash: string | null
+  status: string
+  chunkCount: number
+  error: string | null
+  createdAt: number
+  chunks: ChunkBackup[]
+}
+
+export interface KbBackup {
+  id: string
+  name: string
+  createdAt: number
+  documents: DocumentBackup[]
+}
+
+export interface DataBackup {
+  kind: 'lumen-desk-data'
+  appVersion: string
+  exportedAt: number
+  conversations: ConversationBackup[]
+  knowledgeBases: KbBackup[]
+}
+
+/** data:import 的回执；reindexKbIds 中的库文本已恢复但语义向量需重建 */
+export interface DataImportResult {
+  conversations: { imported: number; skipped: number }
+  knowledgeBases: {
+    imported: number
+    skipped: number
+    documents: number
+    chunks: number
+  }
+  reindexKbIds: string[]
+}
+
 /** embedding 向量化来源（可独立于对话模型选择） */
 export type EmbeddingProvider = 'ollama' | 'cloud'
 

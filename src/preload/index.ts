@@ -4,6 +4,7 @@ import type {
   ChatMode,
   ChunkInfo,
   ConversationInfo,
+  DataImportResult,
   DocumentInfo,
   KnowledgeBaseInfo,
   MessageRecord,
@@ -99,6 +100,24 @@ const api = {
       hadApiKey?: boolean
       view?: SettingsView
     }> => ipcRenderer.invoke('settings:import')
+  },
+
+  data: {
+    /** 全量备份：会话 + 知识库文本导出为 JSON（不含密钥/向量） */
+    exportAll: (): Promise<
+      | { canceled: true }
+      | {
+          canceled: false
+          path: string
+          conversations: number
+          knowledgeBases: number
+        }
+    > => ipcRenderer.invoke('data:export'),
+    /** 从全量备份恢复；同 id 会话/知识库整组跳过 */
+    importAll: (): Promise<
+      | { canceled: true }
+      | { canceled: false; summary: DataImportResult }
+    > => ipcRenderer.invoke('data:import')
   },
 
   ollama: {
