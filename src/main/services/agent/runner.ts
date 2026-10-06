@@ -48,8 +48,15 @@ export interface AgentRunnerDeps {
   kbId?: string
   embedding: EmbeddingDeps
   signal: AbortSignal
-  /** 最终回答文本（整段，agent 模式最终轮不逐 token 流） */
-  onAnswer?: (text: string) => void
+  /**
+   * 最终回答的增量文本。Agent 采用"乐观流式"：每一轮的 content 分片都
+   * 先实时推送（不缓冲到整轮结束，否则长答案要等工具协议解析完才有字），
+   * 若该轮最终带了 tool_calls，说明这些分片是思考独白而非答案，
+   * 紧接着会回调 onAnswerReset 要求清空，文本转由 thought 步骤展示。
+   */
+  onAnswerDelta?: (delta: string) => void
+  /** 工具轮收尾：清空本轮误推给气泡的思考文本 */
+  onAnswerReset?: () => void
   onStep?: (step: AgentStepInfo) => void
   /** 副作用工具审批：resolve(true)=批准执行 / false=拒绝（注入拒绝观察） */
   onConfirm?: (request: {
@@ -110,8 +117,8 @@ async function callModel(
     signal: deps.signal,
     tools
   })
-  // 工具轮的 content 可能是模型的"思考独白"：先缓冲，结束再据有无
-  // toolCalls 决定它是 thought 步骤还是最终回答（避免思考串进答案气泡）
+  // 工具轮的 content 可能是模型的"思考独白"：逐片缓冲落库用，同时实时
+  // 推给气泡（乐观流式）；若整轮结束发现带 tool_calls，由调用方回滚。
   let buffered = ''
   while (true) {
     const { value, done } = await gen.next()
@@ -124,6 +131,7 @@ async function callModel(
       }
     }
     buffered += value
+    deps.onAnswerDelta?.(value)
   }
 }
 
@@ -170,8 +178,12 @@ export async function runAgent(
     // toolsAvailable=undefined（达到轮数上限）时即使模型无视约定仍吐
     // tool_calls，也不再执行，强制用已有观察收尾，避免无限循环。
     if (turn.toolCalls.length === 0 || toolsAvailable === undefined) {
-      const finalText = turn.content.trim() || '（已达到工具调用上限，且模型未给出文本结论，请基于以上步骤结果查看。）'
-      deps.onAnswer?.(finalText)
+      const trimmed = turn.content.trim()
+      const finalText =
+        trimmed ||
+        '（已达到工具调用上限，且模型未给出文本结论，请基于以上步骤结果查看。）'
+      // 分片已在 callModel 里实时推过；模型只吐空白时补一条兜底文案
+      if (!trimmed) deps.onAnswerDelta?.(finalText)
       return {
         content: finalText,
         promptTokens,
@@ -182,6 +194,10 @@ export async function runAgent(
 
     // 本轮确认要执行工具
     toolRounds += 1
+
+    // 乐观推送的文本证实是思考独白：先清空答案气泡，再以 thought 节点
+    // 展示同一段内容（UI 上表现为文字从气泡移入时间线的"思考"折叠区）
+    deps.onAnswerReset?.()
 
     // 思考独白（qwen 工具轮常为空；有则记录，让时间线展示模型在想什么）
     if (turn.content.trim()) {

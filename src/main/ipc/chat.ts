@@ -224,10 +224,15 @@ async function executeRun(
         kbId: payload.kbId,
         embedding: { settings, cloudApiKey },
         signal: controller.signal,
-        onAnswer: (text) => {
-          // 最终轮一次性出文（工具轮的思考不进气泡）
-          answer = text
-          emit(target, { type: 'token', streamId, delta: text })
+        onAnswerDelta: (delta) => {
+          // 乐观流式：最终轮逐 token 出文；工具轮的思考分片也会先来，
+          // 收到 onAnswerReset 时清空 answer 并通知渲染端回滚气泡
+          answer += delta
+          emit(target, { type: 'token', streamId, delta })
+        },
+        onAnswerReset: () => {
+          answer = ''
+          emit(target, { type: 'agent_answer_reset', streamId })
         },
         onStep: emitStep,
         onConfirm: (req) =>

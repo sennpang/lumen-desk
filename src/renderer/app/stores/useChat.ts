@@ -146,6 +146,13 @@ export const useChat = create<ChatState>((set, get) => ({
         if (run) useConversations.getState().appendStreaming(run.messageId, ev.delta)
         break
       }
+      case 'agent_answer_reset': {
+        // Agent 工具轮：先前流入的文本是思考独白，清空气泡（同段文字会
+        // 作为 thought 步骤出现在时间线里）
+        const run = get().activeRun
+        if (run) useConversations.getState().resetStreaming(run.messageId)
+        break
+      }
       case 'citation': {
         // 检索完成、正文开始前到达；先挂到占位 assistant 消息上即时渲染，
         // done 时 hydrate 会用持久化版本覆盖（同一份数据）

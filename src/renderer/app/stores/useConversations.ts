@@ -31,6 +31,8 @@ interface ConversationsState {
 
   /** 流式 token 到达时本地追加到对应 assistant 消息（避免每 token 查库） */
   appendStreaming: (messageId: string, delta: string) => void
+  /** Agent 工具轮回滚：清空已流入气泡的思考独白 */
+  resetStreaming: (messageId: string) => void
   /** citation 事件到达时挂到流式中的 assistant 消息（done 后以库回填为准） */
   attachCitation: (messageId: string, ref: CitationRef) => void
   /** M5：agent_step 事件增量挂到 assistant 消息（按 stepId 去重、seq 排序） */
@@ -101,6 +103,14 @@ export const useConversations = create<ConversationsState>((set, get) => ({
     set((state) => ({
       messages: state.messages.map((m) =>
         m.id === messageId ? { ...m, content: m.content + delta } : m
+      )
+    }))
+  },
+
+  resetStreaming(messageId) {
+    set((state) => ({
+      messages: state.messages.map((m) =>
+        m.id === messageId ? { ...m, content: '' } : m
       )
     }))
   },

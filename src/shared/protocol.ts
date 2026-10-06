@@ -35,6 +35,11 @@ export interface UsageInfo {
 export type StreamEvent =
   | { type: 'start'; streamId: string; conversationId: string; messageId: string }
   | { type: 'token'; streamId: string; delta: string }
+  /**
+   * Agent 专用：刚流式出来的文本其实是"工具轮思考独白"（该轮末尾模型
+   * 挂上了 tool_calls），气泡需要清空，文本会随 thought 步骤节点展示。
+   */
+  | { type: 'agent_answer_reset'; streamId: string }
   | {
       type: 'citation'
       streamId: string
