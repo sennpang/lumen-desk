@@ -42,6 +42,7 @@ export function KnowledgeView({ onBack }: { onBack: () => void }) {
     init,
     selectKb,
     createKb,
+    removeKb,
     pickAndImport,
     importPaths,
     removeDoc,
@@ -155,6 +156,26 @@ export function KnowledgeView({ onBack }: { onBack: () => void }) {
               ＋ 新建
             </button>
           )}
+          <button
+            onClick={() => {
+              const kb = kbs.find((k) => k.id === currentKbId)
+              if (!kb) return
+              const docWarn =
+                kb.docCount > 0 ? `，其中包含 ${kb.docCount} 个文档` : ''
+              if (
+                window.confirm(
+                  `确定删除知识库「${kb.name}」吗？${docWarn}，删除后不可恢复。`
+                )
+              ) {
+                void removeKb(kb.id)
+              }
+            }}
+            disabled={importing || kbs.length === 0}
+            className="rounded-md px-2 py-1 text-sm text-ink2 hover:bg-card hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
+            title="删除当前知识库（文档、片段与向量索引一并清除）"
+          >
+            删除库
+          </button>
           <button
             onClick={toggleHybrid}
             className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition ${

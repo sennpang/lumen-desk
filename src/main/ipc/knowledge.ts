@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron'
 import {
   createKb,
+  deleteKb,
   ensureDefaultKb,
   getChunk,
   listChunksOfDoc,
@@ -12,6 +13,7 @@ import {
   reindexKb,
   removeDocument
 } from '../services/rag/indexing'
+import { deleteKbIndex } from '../services/rag/vectorStore'
 import { getSettings } from '../services/settings/repo'
 import { getCloudApiKey } from '../store/secrets'
 import type {
@@ -31,9 +33,20 @@ import type { KbEvent } from '../../shared/protocol'
 
 // 模块级任务链：每个新导入排到队尾，前序成功失败都继续
 let importQueue: Promise<void> = Promise.resolve()
+// 在途任务计数：删除知识库不能与导入并发
+// （deleteKb 会清表/删索引文件，导入任务正写同一批文件会互相破坏）
+let inflightCount = 0
 
 function enqueueImport(task: () => Promise<void>): void {
-  importQueue = importQueue.then(task, task)
+  inflightCount += 1
+  const wrapped = async (): Promise<void> => {
+    try {
+      await task()
+    } finally {
+      inflightCount -= 1
+    }
+  }
+  importQueue = importQueue.then(wrapped, wrapped)
 }
 
 export function registerKbHandlers(): void {
@@ -44,6 +57,20 @@ export function registerKbHandlers(): void {
   ipcMain.handle('kb:create', (_e, name: string): KnowledgeBaseInfo =>
     createKb(name)
   )
+
+  // 删除整个知识库：先校验存在与忙状态，再删关系数据（FTS 手动清 +
+  // CASCADE 连带 document/chunk），最后删 HNSW 索引/meta 两个文件。
+  // 文件清理失败不回滚数据库（已成为无主文件，不影响功能，仅占磁盘）。
+  ipcMain.handle('kb:remove', async (_e, kbId: string): Promise<void> => {
+    if (typeof kbId !== 'string' || !kbId) throw new Error('知识库 id 无效')
+    if (inflightCount > 0) {
+      throw new Error('有文档正在导入，请等导入结束后再删除知识库')
+    }
+    const kb = listKbs().find((k) => k.id === kbId)
+    if (!kb) throw new Error('知识库不存在或已被删除')
+    deleteKb(kbId)
+    await deleteKbIndex(kbId)
+  })
 
   ipcMain.handle('kb:docs', (_e, kbId: string): DocumentInfo[] =>
     listDocs(kbId)

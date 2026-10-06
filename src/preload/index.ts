@@ -97,6 +97,8 @@ const api = {
       ipcRenderer.invoke('kb:ensure-default'),
     createKb: (name: string): Promise<KnowledgeBaseInfo> =>
       ipcRenderer.invoke('kb:create', name),
+    /** 删除整个知识库（文档/片段/FTS/向量索引一并清除） */
+    removeKb: (kbId: string): Promise<void> => ipcRenderer.invoke('kb:remove', kbId),
     listDocs: (kbId: string): Promise<DocumentInfo[]> =>
       ipcRenderer.invoke('kb:docs', kbId),
     /** 文档片段预览（点击文档查看切分结果，上限 500 条） */

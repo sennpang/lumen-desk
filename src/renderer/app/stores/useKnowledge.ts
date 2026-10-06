@@ -26,6 +26,7 @@ interface KnowledgeState {
   refreshDocs: () => Promise<void>
   selectKb: (id: string) => Promise<void>
   createKb: (name: string) => Promise<void>
+  removeKb: (kbId: string) => Promise<void>
   /** 系统文件选择框导入 */
   pickAndImport: () => Promise<void>
   /** 拖拽导入：drop 后由组件用 webUtils 解析出的绝对路径 */
@@ -93,6 +94,17 @@ export const useKnowledge = create<KnowledgeState>((set, get) => ({
       const kb = await api.knowledge.createKb(trimmed)
       await get().refreshKbs()
       await get().selectKb(kb.id)
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) })
+    }
+  },
+
+  async removeKb(kbId) {
+    try {
+      await api.knowledge.removeKb(kbId)
+      // 删的是最后一个库时 ensureDefaultKb 会重建默认库，
+      // RAG 问答依赖至少一个库存在，不能让列表停在空状态
+      await get().init()
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) })
     }
