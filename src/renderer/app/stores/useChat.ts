@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { api } from '../lib/ipc'
 import { useConversations } from './useConversations'
+import { useKnowledge } from './useKnowledge'
 import type { ChatMode } from '../../../shared/types'
 import type { StreamEvent } from '../../../shared/protocol'
 
@@ -39,6 +40,8 @@ interface ChatState {
    * @param kbId rag 必带；agent 带了作为检索工具的默认知识库
    */
   send: (text: string, mode?: ChatMode, kbId?: string) => Promise<void>
+  /** 重新生成最后一轮回答（旧 assistant 消息主进程会删，重跑最后一条 user） */
+  regenerate: () => Promise<void>
   stop: () => Promise<void>
   /** M5：审批副作用工具；乐观移除卡片（主进程对重复点击幂等） */
   resolveConfirm: (stepId: string, approved: boolean) => Promise<void>
@@ -70,6 +73,29 @@ export const useChat = create<ChatState>((set, get) => ({
       void streamId
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) })
+    } finally {
+      set({ sending: false })
+    }
+  },
+
+  async regenerate() {
+    const convState = useConversations.getState()
+    const { currentId, messages, list } = convState
+    if (!currentId || get().activeRun || get().sending) return
+    // 没有 user 消息说明会话是空的（理论上按钮也不会出现，双保险）
+    if (!messages.some((m) => m.role === 'user')) return
+    const mode = list.find((c) => c.id === currentId)?.mode ?? 'chat'
+    // rag/agent 复用当前选中的知识库；chat 不需要
+    const kbId =
+      mode === 'chat' ? undefined : (useKnowledge.getState().currentKbId ?? undefined)
+
+    set({ error: null, sending: true })
+    try {
+      await api.chat.regenerate({ conversationId: currentId, mode, kbId })
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) })
+      // 主进程在 start 之前就拦下的错误不会触发 hydrate，手动刷一次
+      await convState.hydrateCurrent()
     } finally {
       set({ sending: false })
     }

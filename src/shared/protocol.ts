@@ -16,10 +16,15 @@ export interface RunPayload {
   /** 不传则由主进程新建会话（F-A3） */
   conversationId?: string
   mode: ChatMode
-  /** 用户这一轮输入的文本 */
+  /** 用户这一轮输入的文本（regenerate=true 时忽略，改从库中取最后一条 user 消息） */
   message: string
   /** mode='rag' 时必填：要检索的知识库 id */
   kbId?: string
+  /**
+   * 重新生成上一轮回答：不插入新的 user 消息，而是删除会话末尾的
+   * assistant 消息后，用最后一条 user 消息重跑。必须带 conversationId。
+   */
+  regenerate?: boolean
 }
 
 export interface UsageInfo {

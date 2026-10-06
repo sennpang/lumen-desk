@@ -5,6 +5,9 @@ import {
   autoTitleFromFirstMessage,
   buildChatHistory,
   createConversation,
+  deleteTrailingAssistant,
+  getConversation,
+  getLastUserMessage,
   touchConversation,
   updateMessage
 } from '../services/conversations/repo'
@@ -29,9 +32,17 @@ import type { RunPayload, StreamEvent } from '../../shared/protocol'
 
 interface ActiveRun {
   controller: AbortController
+  conversationId: string
 }
 
 const activeRuns = new Map<string, ActiveRun>()
+
+function hasActiveRun(conversationId: string): boolean {
+  for (const run of activeRuns.values()) {
+    if (run.conversationId === conversationId) return true
+  }
+  return false
+}
 
 /**
  * M5：等待用户审批的副作用工具调用。
@@ -61,14 +72,55 @@ async function executeRun(
   const resolved = resolveModelConfig(settings, cloudApiKey)
   const modelLabel = resolved.ok ? resolved.config.model : settings.model
 
-  // 1. 会话（不传 id 则隐式新建），记录当时实际使用的模型
-  const conversationId =
-    payload.conversationId ?? createConversation(payload.mode, modelLabel).id
+  // 1. 会话与本轮提问文本
+  // - 普通发送：不传 id 隐式新建，随后插入 user 消息
+  // - 重新生成：必须已有会话；事务里取最后一条 user 消息作为本轮文本，
+  //   同时删掉末尾的 assistant 消息（agent_step 随 CASCADE 清掉）
+  let conversationId: string
+  let userText: string
+  if (payload.regenerate) {
+    if (!payload.conversationId) {
+      emit(target, { type: 'error', streamId, message: '重新生成需要指定会话' })
+      return
+    }
+    conversationId = payload.conversationId
+    if (!getConversation(conversationId)) {
+      emit(target, { type: 'error', streamId, message: '会话不存在' })
+      return
+    }
+    if (hasActiveRun(conversationId)) {
+      emit(target, { type: 'error', streamId, message: '该会话已有生成任务在进行中' })
+      return
+    }
+    const lastUser = getLastUserMessage(conversationId)
+    if (!lastUser) {
+      emit(target, { type: 'error', streamId, message: '没有可重新生成的提问' })
+      return
+    }
+    deleteTrailingAssistant(conversationId)
+    userText = lastUser.content
+  } else {
+    conversationId =
+      payload.conversationId ?? createConversation(payload.mode, modelLabel).id
+    if (hasActiveRun(conversationId)) {
+      emit(target, { type: 'error', streamId, message: '该会话已有生成任务在进行中' })
+      return
+    }
+    userText = payload.message
+  }
 
-  // 2. 用户消息先落库（写入前持久化，PRD 第 6 章：崩溃不丢）
-  const userMsg = addMessage({ conversationId, role: 'user', content: payload.message })
-  if (userMsg.seq === 1) {
-    autoTitleFromFirstMessage(conversationId, payload.message)
+  // 控制器尽早注册（原来在检索之后才注册，前面的 await 期间 chat:stop
+  // 找不到任务；也用于同会话并发生成的拦截）
+  const controller = new AbortController()
+  activeRuns.set(streamId, { controller, conversationId })
+
+  // 2. 用户消息先落库（写入前持久化，PRD 第 6 章：崩溃不丢）。
+  //    重新生成不插入新 user 消息，复用已有的最后一条。
+  if (!payload.regenerate) {
+    const userMsg = addMessage({ conversationId, role: 'user', content: userText })
+    if (userMsg.seq === 1) {
+      autoTitleFromFirstMessage(conversationId, userText)
+    }
   }
   touchConversation(conversationId, modelLabel)
 
@@ -117,7 +169,7 @@ async function executeRun(
     }
     let retrieved
     try {
-      retrieved = await retrieve(payload.message, payload.kbId, {
+      retrieved = await retrieve(userText, payload.kbId, {
         settings,
         cloudApiKey
       })
@@ -138,10 +190,7 @@ async function executeRun(
     systemContent = buildRagSystemPrompt(systemContent, retrieved)
   }
 
-  // 5. 控制器注册（chat/rag/agent 共用停止入口）
-  const controller = new AbortController()
-  activeRuns.set(streamId, { controller })
-
+  // 5. 生成（控制器已在会话解析后提前注册，chat:stop 随时可用）
   let answer = ''
   let promptTokens = 0
   let completionTokens = 0
@@ -163,7 +212,7 @@ async function executeRun(
   try {
     if (payload.mode === 'agent') {
       // ---- Agent 模式：ReAct 多轮工具循环（system 规则由 runner 在人设上追加）----
-      const result = await runAgent(payload.message, history, {
+      const result = await runAgent(userText, history, {
         modelConfig: {
           baseUrl: modelConfig.baseUrl,
           apiKey: modelConfig.apiKey,

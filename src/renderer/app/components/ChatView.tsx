@@ -88,8 +88,12 @@ export function ChatView() {
           </div>
         ) : (
           <div className="mx-auto flex max-w-3xl flex-col gap-4 px-5 py-6">
-            {visible.map((m) => (
-              <MessageBubble key={m.id} message={m} />
+            {visible.map((m, i) => (
+              <MessageBubble
+                key={m.id}
+                message={m}
+                isLast={i === visible.length - 1}
+              />
             ))}
             <div ref={bottomRef} />
           </div>

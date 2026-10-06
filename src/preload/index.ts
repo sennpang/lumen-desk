@@ -35,6 +35,19 @@ const api = {
   chat: {
     /** 发起一次运行，返回 streamId；过程经 onEvent 推送 */
     run: (payload: RunPayload): Promise<string> => ipcRenderer.invoke('chat:run', payload),
+    /** 重新生成上一轮回答（复用最后一条 user 消息，旧 assistant 消息由主进程删除） */
+    regenerate: (input: {
+      conversationId: string
+      mode: ChatMode
+      kbId?: string
+    }): Promise<string> =>
+      ipcRenderer.invoke('chat:run', {
+        conversationId: input.conversationId,
+        mode: input.mode,
+        kbId: input.kbId,
+        message: '',
+        regenerate: true
+      }),
     /** 停止生成（F-A1）：主进程中断对应 fetch，已生成内容保留 */
     stop: (streamId: string): Promise<void> =>
       ipcRenderer.invoke('chat:stop', streamId),

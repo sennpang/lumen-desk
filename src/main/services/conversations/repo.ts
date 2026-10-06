@@ -234,3 +234,34 @@ export function buildChatHistory(conversationId: string): ChatMessage[] {
     .filter((m) => m.status === 'done' && m.role !== 'tool')
     .map((m) => ({ role: m.role, content: m.content }))
 }
+
+/** 重新生成：取会话中最后一条用户消息（作为重发的内容） */
+export function getLastUserMessage(conversationId: string): MessageRecord | null {
+  const row = getDb()
+    .prepare(
+      `SELECT * FROM message
+       WHERE conversation_id = ? AND role = 'user'
+       ORDER BY seq DESC LIMIT 1`
+    )
+    .get(conversationId) as MessageRow | undefined
+  return row ? toMessageRecord(row) : null
+}
+
+/**
+ * 重新生成：删掉会话末尾的 assistant 消息（连带其 agent_step 由
+ * ON DELETE CASCADE 清除，meta 里的 citations 随行删除）。
+ * 只删"末尾"那条——若最后一条是 user（崩溃残留）则不动数据。
+ * @returns 被删除的消息，没有可删的时返回 null
+ */
+export function deleteTrailingAssistant(conversationId: string): MessageRecord | null {
+  const db = getDb()
+  const row = db
+    .prepare(
+      'SELECT * FROM message WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1'
+    )
+    .get(conversationId) as MessageRow | undefined
+  if (!row || row.role !== 'assistant') return null
+  const record = toMessageRecord(row)
+  db.prepare('DELETE FROM message WHERE id = ?').run(row.id)
+  return record
+}

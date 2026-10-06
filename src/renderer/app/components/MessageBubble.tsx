@@ -18,15 +18,25 @@ import type {
 // 模型按 PRD 14.3 prompt 被要求用 [1] [2] 标注来源
 const CITATION_MARK_RE = /\[(\d{1,2})\]/g
 
-export function MessageBubble({ message }: { message: MessageRecord }) {
+export function MessageBubble({
+  message,
+  isLast = false
+}: {
+  message: MessageRecord
+  /** 是否会话内最后一条可见消息：只有最后一条 assistant 可"重新生成" */
+  isLast?: boolean
+}) {
   const isUser = message.role === 'user'
 
   if (isUser) {
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm bg-brand px-3.5 py-2 text-sm leading-relaxed text-white">
-          {message.content}
+      <div className="group flex flex-col items-end gap-1">
+        <div className="flex justify-end">
+          <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm bg-brand px-3.5 py-2 text-sm leading-relaxed text-white">
+            {message.content}
+          </div>
         </div>
+        <MessageActions text={message.content} />
       </div>
     )
   }
@@ -40,14 +50,15 @@ export function MessageBubble({ message }: { message: MessageRecord }) {
     steps.length === 0
 
   return (
-    <div className="flex justify-start">
-      <div
-        className={`max-w-[85%] rounded-2xl rounded-tl-sm border px-3.5 py-2 text-sm leading-relaxed ${
-          message.status === 'error'
-            ? 'border-danger bg-danger-bg text-danger'
-            : 'border-line bg-card text-ink'
-        }`}
-      >
+    <div className="group flex justify-start">
+      <div className="flex max-w-[85%] flex-col">
+        <div
+          className={`rounded-2xl rounded-tl-sm border px-3.5 py-2 text-sm leading-relaxed ${
+            message.status === 'error'
+              ? 'border-danger bg-danger-bg text-danger'
+              : 'border-line bg-card text-ink'
+          }`}
+        >
         {showThinking ? (
           <span className="text-ink2">
             正在思考<span className="animate-pulse">…</span>
@@ -79,9 +90,86 @@ export function MessageBubble({ message }: { message: MessageRecord }) {
         {citations.length > 0 && (
           <CitationList messageId={message.id} citations={citations} />
         )}
+        </div>
+        <MessageActions
+          text={message.content}
+          canRegenerate={isLast && message.status !== 'streaming'}
+        />
       </div>
     </div>
   )
+}
+
+/**
+ * 消息悬浮操作条：复制全文 / 重新生成（仅最后一条 assistant）。
+ * 默认隐藏，hover 整条消息或键盘聚焦时出现，避免静态界面噪音。
+ */
+function MessageActions({
+  text,
+  canRegenerate = false
+}: {
+  text: string
+  canRegenerate?: boolean
+}) {
+  const [copied, setCopied] = useState(false)
+  const regenerate = useChat((s) => s.regenerate)
+  const busy = useChat((s) => s.activeRun !== null || s.sending)
+
+  const copy = async () => {
+    const ok = await copyToClipboard(text)
+    if (ok) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-1 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+      <button
+        onClick={() => void copy()}
+        disabled={!text}
+        className="text-[11px] text-ink2 hover:text-brand disabled:cursor-not-allowed"
+        title="复制全文"
+      >
+        {copied ? '已复制' : '复制'}
+      </button>
+      {canRegenerate && (
+        <button
+          onClick={() => void regenerate()}
+          disabled={busy}
+          className="text-[11px] text-ink2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
+          title="用同一条提问重新生成回答"
+        >
+          重新生成
+        </button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 复制文本：优先 Clipboard API（安全上下文可用）；
+ * 失败时退回隐藏 textarea + execCommand，保证 file:// 打包环境也能复制。
+ */
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      return ok
+    } catch {
+      return false
+    }
+  }
 }
 
 /** 把正文按 [n] 切开，编号合法（1..引用数）时渲染成可点角标 */
