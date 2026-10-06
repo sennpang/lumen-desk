@@ -5,7 +5,8 @@ import {
   getConversation,
   listConversations,
   listMessages,
-  renameConversation
+  renameConversation,
+  searchMessages
 } from '../services/conversations/repo'
 import { listStepsByMessageIds } from '../services/agent/repo'
 import type { ChatMode } from '../../shared/types'
@@ -41,5 +42,11 @@ export function registerConversationHandlers(): void {
 
   ipcMain.handle('conv:remove', (_e, id: string) => {
     deleteConversation(id)
+  })
+
+  // 历史消息全文（子串）搜索，返回命中摘要；空查询由仓储返回空数组
+  ipcMain.handle('conv:search', (_e, query: string) => {
+    if (typeof query !== 'string') return []
+    return searchMessages(query)
   })
 }

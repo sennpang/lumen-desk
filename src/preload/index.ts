@@ -7,6 +7,7 @@ import type {
   DocumentInfo,
   KnowledgeBaseInfo,
   MessageRecord,
+  MessageSearchHit,
   OllamaModelInfo,
   OllamaStatus,
   SaveSettingsInput,
@@ -76,7 +77,10 @@ const api = {
       ipcRenderer.invoke('conv:get', id),
     rename: (id: string, title: string): Promise<void> =>
       ipcRenderer.invoke('conv:rename', id, title),
-    remove: (id: string): Promise<void> => ipcRenderer.invoke('conv:remove', id)
+    remove: (id: string): Promise<void> => ipcRenderer.invoke('conv:remove', id),
+    /** 历史消息子串搜索（最近 50 条命中） */
+    search: (query: string): Promise<MessageSearchHit[]> =>
+      ipcRenderer.invoke('conv:search', query)
   },
 
   settings: {

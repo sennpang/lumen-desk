@@ -24,6 +24,17 @@ export interface ConversationInfo {
   modelId: string | null
 }
 
+/** 历史消息搜索命中（conv:search 返回项） */
+export interface MessageSearchHit {
+  conversationId: string
+  conversationTitle: string
+  messageId: string
+  role: MessageRole
+  /** 命中位置前后截断的摘要（已折叠空白） */
+  snippet: string
+  createdAt: number
+}
+
 /** RAG 引用（一条被注入并展示的来源片段；持久化在 assistant 消息上） */
 export interface CitationRef {
   chunkId: string

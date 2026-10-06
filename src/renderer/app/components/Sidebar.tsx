@@ -1,5 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { api } from '../lib/ipc'
 import { useConversations } from '../stores/useConversations'
+import type { MessageSearchHit } from '../../../shared/types'
 
 interface SidebarProps {
   view: 'chat' | 'knowledge'
@@ -8,13 +10,51 @@ interface SidebarProps {
 }
 
 /**
- * 左侧边栏（PRD 5.1）：新建对话、会话列表、知识库入口、设置入口。
+ * 左侧边栏（PRD 5.1）：新建对话、历史搜索、会话列表、知识库入口、设置入口。
  * 会话项支持：单击切换、双击/按钮重命名（行内编辑）、删除（confirm 二次确认）。
  */
 export function Sidebar({ view, onNavigate, onOpenSettings }: SidebarProps) {
   const { list, currentId, createNew, select, rename, remove } = useConversations()
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+
+  // 历史消息搜索：输入防抖 200ms，空串不发请求
+  const [query, setQuery] = useState('')
+  const [hits, setHits] = useState<MessageSearchHit[]>([])
+  const [searching, setSearching] = useState(false)
+  const trimmedQuery = query.trim()
+
+  useEffect(() => {
+    if (!trimmedQuery) {
+      setHits([])
+      setSearching(false)
+      return
+    }
+    setSearching(true)
+    let cancelled = false
+    const timer = setTimeout(() => {
+      api.conversation
+        .search(trimmedQuery)
+        .then((r) => {
+          if (!cancelled) setHits(r)
+        })
+        .catch(() => {
+          if (!cancelled) setHits([])
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false)
+        })
+    }, 200)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [trimmedQuery])
+
+  const openHit = async (hit: MessageSearchHit) => {
+    await select(hit.conversationId)
+    setQuery('')
+  }
 
   const startRename = (id: string, title: string) => {
     setEditingId(id)
@@ -46,66 +86,106 @@ export function Sidebar({ view, onNavigate, onOpenSettings }: SidebarProps) {
         </button>
       </div>
 
+      <div className="px-3 pb-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="搜索历史消息…"
+          className="w-full rounded-md border border-line bg-paper px-2.5 py-1.5 text-sm outline-none placeholder:text-ink2/60 focus:border-brand"
+        />
+      </div>
+
       <nav className="flex-1 overflow-y-auto px-2 pb-2">
-        {list.length === 0 && (
+        {trimmedQuery ? (
+          // ---- 搜索结果态 ----
+          searching && hits.length === 0 ? (
+            <p className="px-2 py-6 text-center text-xs text-ink2">搜索中…</p>
+          ) : hits.length === 0 ? (
+            <p className="px-2 py-6 text-center text-xs text-ink2">
+              没有包含「{trimmedQuery}」的消息
+            </p>
+          ) : (
+            <ul className="space-y-0.5">
+              {hits.map((h) => (
+                <li key={h.messageId}>
+                  <button
+                    onClick={() => void openHit(h)}
+                    className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-paper"
+                    title="打开所在会话"
+                  >
+                    <span className="flex items-center gap-1.5 text-xs text-ink2">
+                      <span className="shrink-0">{h.role === 'user' ? '🧑 我' : '🤖 AI'}</span>
+                      <span className="truncate">{h.conversationTitle}</span>
+                    </span>
+                    <span className="line-clamp-2 text-xs leading-relaxed text-ink">
+                      {h.snippet}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )
+        ) : list.length === 0 ? (
           <p className="px-2 py-6 text-center text-xs text-ink2">
             还没有对话
             <br />
             点击上方按钮开始
           </p>
+        ) : (
+          // ---- 会话列表态 ----
+          <ul className="space-y-0.5">
+            {list.map((c) => (
+              <li key={c.id}>
+                {editingId === c.id ? (
+                  <input
+                    autoFocus
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onBlur={commitRename}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void commitRename()
+                      if (e.key === 'Escape') setEditingId(null)
+                    }}
+                    className="w-full rounded-md border border-brand px-2 py-1.5 text-sm outline-none"
+                  />
+                ) : (
+                  <div
+                    onClick={() => void select(c.id)}
+                    onDoubleClick={() => startRename(c.id, c.title)}
+                    className={`group flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 text-sm ${
+                      c.id === currentId
+                        ? 'bg-brand-bg font-medium text-brand-dark'
+                        : 'text-ink hover:bg-paper'
+                    }`}
+                    title="单击切换，双击重命名"
+                  >
+                    <span className="flex-1 truncate">{c.title}</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        startRename(c.id, c.title)
+                      }}
+                      className="opacity-0 transition group-hover:opacity-100"
+                      title="重命名"
+                    >
+                      ✎
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void handleRemove(c.id, c.title)
+                      }}
+                      className="opacity-0 transition hover:text-danger group-hover:opacity-100"
+                      title="删除"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
         )}
-        <ul className="space-y-0.5">
-          {list.map((c) => (
-            <li key={c.id}>
-              {editingId === c.id ? (
-                <input
-                  autoFocus
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onBlur={commitRename}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') void commitRename()
-                    if (e.key === 'Escape') setEditingId(null)
-                  }}
-                  className="w-full rounded-md border border-brand px-2 py-1.5 text-sm outline-none"
-                />
-              ) : (
-                <div
-                  onClick={() => void select(c.id)}
-                  onDoubleClick={() => startRename(c.id, c.title)}
-                  className={`group flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 text-sm ${
-                    c.id === currentId
-                      ? 'bg-brand-bg font-medium text-brand-dark'
-                      : 'text-ink hover:bg-paper'
-                  }`}
-                  title="单击切换，双击重命名"
-                >
-                  <span className="flex-1 truncate">{c.title}</span>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      startRename(c.id, c.title)
-                    }}
-                    className="opacity-0 transition group-hover:opacity-100"
-                    title="重命名"
-                  >
-                    ✎
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      void handleRemove(c.id, c.title)
-                    }}
-                    className="opacity-0 transition hover:text-danger group-hover:opacity-100"
-                    title="删除"
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
       </nav>
 
       <div className="border-t border-line p-2">

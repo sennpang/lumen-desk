@@ -7,6 +7,7 @@ import type {
   ChatMessage,
   MessageRecord,
   MessageRole,
+  MessageSearchHit,
   MessageStatus
 } from '../../../shared/types'
 
@@ -226,6 +227,62 @@ export function listMessages(conversationId: string): MessageRecord[] {
     .prepare('SELECT * FROM message WHERE conversation_id = ? ORDER BY seq ASC')
     .all(conversationId) as MessageRow[]
   return rows.map(toMessageRecord)
+}
+
+/**
+ * 历史消息搜索（会话多了之后靠 24 字标题找不到内容）。
+ *
+ * 本地单用户消息量（几千到几万行）下 LIKE '%q%' 全表扫描是毫秒级，
+ * 不值得为它再维护一张消息 FTS 虚表（要补触发器/迁移/删除同步）；
+ * 中文子串匹配 LIKE 天然支持（与 chunk_fts 用 trigram 的场景不同：
+ * 知识库 chunk 量大且要参与排序融合）。
+ * 用户输入里的 % _ \ 必须转义，否则会被当通配符。
+ */
+const SEARCH_LIMIT = 50
+const SNIPPET_RADIUS = 36
+
+export function searchMessages(rawQuery: string): MessageSearchHit[] {
+  const query = rawQuery.trim()
+  if (!query) return []
+  const escaped = query.replace(/[\\%_]/g, (c) => `\\${c}`)
+  const rows = getDb()
+    .prepare(
+      `SELECT m.id AS message_id, m.conversation_id, m.role, m.content,
+              m.created_at, c.title AS conversation_title
+         FROM message m
+         JOIN conversation c ON c.id = m.conversation_id
+        WHERE m.content LIKE ? ESCAPE '\\'
+          AND m.role IN ('user', 'assistant')
+        ORDER BY m.created_at DESC
+        LIMIT ?`
+    )
+    .all(`%${escaped}%`, SEARCH_LIMIT) as Array<{
+    message_id: string
+    conversation_id: string
+    role: string
+    content: string
+    created_at: number
+    conversation_title: string
+  }>
+
+  const lowerQuery = query.toLowerCase()
+  return rows.map((r) => {
+    const idx = r.content.toLowerCase().indexOf(lowerQuery)
+    const start = Math.max(0, idx - SNIPPET_RADIUS)
+    const end = Math.min(r.content.length, idx + query.length + SNIPPET_RADIUS)
+    const snippet =
+      (start > 0 ? '…' : '') +
+      r.content.slice(start, end).replace(/\s+/g, ' ').trim() +
+      (end < r.content.length ? '…' : '')
+    return {
+      conversationId: r.conversation_id,
+      conversationTitle: r.conversation_title,
+      messageId: r.message_id,
+      role: r.role as MessageRole,
+      snippet,
+      createdAt: r.created_at
+    }
+  })
 }
 
 /** 组装发给 LLM 的上下文（只要 user/assistant/system 的已完成文本，tool 角色 M5 再加） */
