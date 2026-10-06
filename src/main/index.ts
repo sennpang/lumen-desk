@@ -84,11 +84,34 @@ function createWindow(): void {
   }
 }
 
+// 打包后裁剪应用菜单：去掉含"重新加载/开发者工具"的 View 等菜单，
+// 桌面产品不应露出 Chromium 调试入口；但不能整体置空——
+// macOS 的 Cmd+C/V/X/A/Z 等文本编辑快捷键由系统标准 Edit 菜单承载，
+// setApplicationMenu(null) 会让输入框里复制粘贴/全选/撤销全部失效。
+// 用 role 角色菜单只保留 App / Edit / Window 三组，标签和快捷键都由
+// 系统按当前语言自动提供，无需自己绑 accelerator。
+function buildPackagedMenu(): Menu {
+  return Menu.buildFromTemplate([
+    // appMenu：关于 / 服务 / 隐藏 / 退出（macOS 惯例的第一栏，名称取 app.name）
+    { role: 'appMenu' },
+    // editMenu：Undo/Redo/Cut/Copy/Paste/Select All，快捷键的关键
+    { role: 'editMenu' },
+    // windowMenu：最小化/缩放/关闭 + 窗口列表
+    { role: 'windowMenu' }
+  ])
+}
+
 // Electron 就绪后才能创建窗口 / 访问 userData
 app.whenReady().then(() => {
-  // 打包后移除默认应用菜单（File/Edit/View…，含"重新加载/开发者工具"），
-  // 桌面产品不应露出 Chromium 调试入口；开发态保留以便调试。
-  if (app.isPackaged) Menu.setApplicationMenu(null)
+  // macOS 保留角色菜单；Windows/Linux 下 autoHideMenuBar 已默认隐藏，
+  // 直接置空即可（这两个平台编辑快捷键不依赖应用菜单）。
+  if (app.isPackaged) {
+    if (process.platform === 'darwin') {
+      Menu.setApplicationMenu(buildPackagedMenu())
+    } else {
+      Menu.setApplicationMenu(null)
+    }
+  }
 
   ensureDataDirs()
   initDb()
