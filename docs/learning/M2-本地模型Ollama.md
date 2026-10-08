@@ -171,6 +171,8 @@ async function getJson(url: string, timeoutMs: number) {
 2. `apiKey: 'ollama'` 这个占位串能不能省？为什么？
 3. 发现服务为什么返回结构化状态而不是直接抛错？列出至少三种要区分的用户状态。
 4. 如果让你再接一家"OpenAI 兼容但报文有细微差异"的供应商，你会改哪几个文件？哪个文件坚决不该动？
+5. "没装/没启动""装了但没响应""服务活着但报错了"这三种状态，在 Node fetch 里分别是什么底层结果？`detectOllama` 为什么约定永不抛异常，而同一个文件里的 `listOllamaModels` 失败却要抛？
+6. 默认地址为什么写死 `http://127.0.0.1:11434` 而不是 `http://localhost:11434`？在什么系统状态下用 localhost 会出现"服务明明起着却连不上"？
 
 ## 自测题参考答案
 
@@ -210,3 +212,19 @@ async function getJson(url: string, timeoutMs: number) {
 - 如果差异在 SSE 报文边界（比如字段名、帧格式不同），在 client.ts 的解析处加**最小兼容分支**，但优先判断是不是能通过防御式访问吸收掉。
 
 坚决不该动的是**聊天主链路的协议形态**：`{baseUrl, apiKey, model}` 归一化出口、IPC `chat:run`、渲染端 useChat——一旦让 provider 概念渗漏到这些层，每接一家都要全链路改一遍，归一化模式就白做了。client.ts 的理想状态是"不知道任何供应商名字"。
+
+**5. "没装/没启动""装了但没响应""服务活着但报错了"这三种状态，在 Node fetch 里分别是什么底层结果？`detectOllama` 为什么约定永不抛异常，而同一个文件里的 `listOllamaModels` 失败却要抛？**
+
+[ollama.ts](../../src/main/services/llm/ollama.ts) 的 `getJson` 只有两行关键逻辑——`fetch(url, { signal: AbortSignal.timeout(ms) })` 和 `if (!res.ok) throw`，三种状态由此分流：
+
+1. **没装/没启动**：11434 端口无人监听，TCP 三次握手第一步就被回 RST，fetch 以 `fetch failed` reject，cause 是 **ECONNREFUSED**；
+2. **装了但卡住/端口被占/防火墙丢包**：TCP 包发出去没有任何回应，**AbortSignal.timeout(1500)** 在 1.5 秒后以 TimeoutError 中止请求。探活超时故意设短（拉模型列表放宽到 4000ms）——这是用户点一下按钮就盯着看的同步交互，快速失败比准确等待重要；
+3. **服务活着但响应异常**：连接建立、HTTP 响应回来了但状态码非 2xx，代码显式 `throw new Error('Ollama 返回 ' + res.status)`；响应体坏到 `res.json()` 解析失败也会走同一条 catch。
+
+`detectOllama` 用一次 try/catch 把以上全部收编成 `{ available:false, version:null, reason }`——**永不抛是探活函数的契约**："环境缺失"是用户状态不是程序故障，UI 要靠一份数据渲染"未安装/出错+引导"，抛异常只会让调用方再写一遍 catch。`listOllamaModels` 相反：它只在**已经探活成功、用户明确点"刷新列表"**时才被调用，这时失败属于真正的意外（服务中途挂了、返回了畸形报文），让它抛、由 IPC 转成 Promise rejection 弹给用户最省代码。同一文件两种错误策略，区别不在技术而在调用场景：自动探测对失败宽容，显式操作对失败严格。
+
+**6. 默认地址为什么写死 `http://127.0.0.1:11434` 而不是 `http://localhost:11434`？在什么系统状态下用 localhost 会出现"服务明明起着却连不上"？**
+
+`localhost` 是主机名不是地址，发请求前要先经 DNS/hosts 解析，而它通常同时解析出两条记录：IPv4 的 `127.0.0.1` 和 IPv6 的 `::1`。Node 的连接层按系统地址选择策略可能**先试 `::1`**；而 Ollama 默认只绑定 IPv4 回环地址，于是连 `[::1]:11434` 收到连接拒绝，部分系统/Node 版本不会自动回退 IPv4（或回退很慢），表现就是"端口在、服务在、应用却连不上"。
+
+写死 IPv4 字面量一举三得：①消灭 localhost→IP 的解析耗时与解析器配置差异（某些企业 DNS 还会把 localhost 转发出去）；②绕开 IPv4/IPv6 选择分歧；③回环地址的流量不出物理网卡，断网、飞行模式、VPN 乱配路由时都可达——这是"本地推理断网可用"承诺的底座。设置仓库里的默认值注释也写明了"用 127.0.0.1 比 localhost 更稳"。
