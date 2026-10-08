@@ -87,6 +87,138 @@ SQLite 不擅长高维浮点向量的近邻检索（没有 ANN 索引，只能�
 
 导入是秒级到分钟级任务（解析→逐个 embed→写索引）。`kb:import` 立即返回，主进程串行处理并推 `doc_enqueued / doc_result / import_finished`，渲染端增量更新卡片（含失败原因 `document.error`）。这条思路与 M1 的 chat:event 完全一致。
 
+## 深入：向量、图索引与切分器的内部机制
+
+### A. "语义坐标化"到底在说什么：用三维玩具模型理解 embedding 与 cosine
+
+embedding 模型是一个函数：`文本 → 一串固定长度的实数`。真实模型是 768/1024 维，无法直观，用**假装只有 3 维**的玩具模型看本质。假设模型把词映射成：
+
+```
+猫     → [ 0.9,  0.1, -0.2]
+小猫   → [ 0.88, 0.12, -0.18]   （和"猫"方向几乎一致）
+汽车   → [ 0.1, -0.8,  0.3]    （完全不同的方向）
+```
+
+模型在海量语料上训练后，**"用法/含义相近的词，向量方向也相近"**——这就是语义的坐标化。衡量方向相近程度用 cosine 相似度（本项目 HNSW space 固定 `'cosine'`）：
+
+```
+                A·B                两个向量对应位相乘再求和（点积）
+cos(A,B) = ─────────────
+            |A| × |B|              各自长度（所有位平方和开根号）
+```
+
+值域 -1~1：1 = 方向完全相同，0 = 正交（无关），-1 = 相反。分母除以向量长度意味着**只看方向、不看长短**：一段话说了三遍"猫猫猫"，向量方向不变只是模变长，cosine 仍判为同主题；而"汽车"和"猫"的点积趋近 0。HNSW 返回的 `distance` 是 cosine 距离（≈ 1−相似度，越小越近），UI 里只用来排序不展示。
+
+提问时发生的事：把用户的问题也 embedding 成一个 768 维向量 → 在图里找方向最接近的 6 个 chunk 向量 → 取回文本。全程没有一个字是关键词匹配，所以"怎么让咖啡甜一点"能命中不含"甜"字的资料。
+
+### B. HNSW 在"图"上怎么找近邻：为什么它是"近似"的
+
+精确解法是暴力扫描：查询向量与库里每个向量算一次 cosine，10 万个块就是 10 万次 768 维乘加——每次提问都这么算不可接受。HNSW（Hierarchical Navigable Small World）的思路是**提前在向量之间修一张分层高速公路网**：
+
+- 每个向量是图上的一个节点，节点和它附近的若干节点之间有边；
+- 图分多层：最上层边少而长（"省际高速"，节点稀疏），越往下边越多越短（"城市道路"，节点稠密）；
+- 检索时从最高层的随机入口开始，每层贪心地走向离查询更近的邻居，走到该层局部最近后下沉一层；层层缩小范围，最底层做一次精细邻居扫描。
+
+这类似地图导航找附近咖啡馆：先走高速快速逼近区域，再走街道精确定位，不需要挨家挨户扫街。代价是**近似**——极端情况下可能错过真正的最近邻，但实测召回率足够高，而速度从 O(n) 降到 O(log n) 级别。建索引时的 M（层数/连接数）由库默认参数决定，我们只消费检索结果。
+
+### C. 检索函数逐行走读：向量怎么变回 chunk 文本
+
+[vectorStore.ts](../../src/main/services/rag/vectorStore.ts) 的 `searchVectors` 只有四步，每步都对应一个具体约束：
+
+```ts
+const meta = await readMeta(kbId)                         // ① 读映射（不是读向量）
+if (!meta || !existsSync(indexPath(kbId))) return []       //   空库静默返回 []
+if (meta.dim !== vector.length) throw new Error('…请重建索引')  // ② 维度守卫
+
+const index = new HierarchicalNSW(SPACE, meta.dim)
+index.readIndexSync(indexPath(kbId))                      // ③ load 图到内存（无状态式 API）
+const result = index.searchKnn(vector, Math.min(k, 元素数)) //   真正的近邻图搜索
+
+result.neighbors.forEach((label, i) => {                  // ④ 整数 label → uuid
+  const chunkId = meta.labels[label]
+  if (chunkId) hits.push({ chunkId, distance: result.distances[i] })
+})
+```
+
+注意第 ④ 步：图里存的、searchKnn 返回的都只是整数 label，**真正的文本在 SQLite 的 chunk 表**，要拿 `meta.labels[label]` 换回 uuid 再去 SQL 查。这就是"向量不入库、数据库不存向量、meta.json 是两者唯一桥梁"的实际形态。第 ② 步的维度错误是真实出现过的故障：用户换了 embedding 模型（768→1024 维），查询向量维度和图维度对不上，继续算只会得到垃圾结果，所以直接报错并把"下一步该做什么"（重建索引）写进错误文案。
+
+### D. 写入与删除：label 分配、容量扩容、原子落盘
+
+`appendVectors` 的关键几行：
+
+```ts
+let nextLabel = meta.nextLabel
+for (const item of items) {
+  const label = nextLabel++                  // 单调递增
+  meta.labels[label] = item.chunkId
+  index.addPoint(item.vector, label)        // label 是 C++ size_t，只能吃整数
+}
+meta.nextLabel = nextLabel                  // 已删除的 label 不复用
+```
+
+为什么 label 删除后留空洞也**绝不复用**：label 只是图节点的数字名字，复用旧 label 意味着"旧引用指向新向量"——如果有任何历史数据（日志、未来的快照）残留了旧 label，就会静默串到完全无关的新 chunk。单调递增让 label 永远唯一，零成本防这类 bug。容量不够时 `resizeIndex` 扩容（初始 1024，按 4 倍）；删除用 `markDelete(label)` 打墓碑（节点物理还在但不再参与检索），同时删 meta 里的映射键；**全删光时直接 unlink 两个文件**，让下次导入从全新索引开始，避免墓碑空洞无限累积。
+
+落盘是"写临时文件 + rename"双原子写：
+
+```ts
+index.writeIndexSync(`${target}.tmp`); await rename(tmp, target)  // 索引
+await writeFile(metaTmp, ...); await rename(metaTmp, meta)       // 映射
+```
+
+同卷 rename 在 POSIX/Windows 上都是原子的：崩溃要么发生在 rename 前（旧文件完好）、要么 rename 后（新文件完整），永远不会留下写了一半的损坏索引。代价是 load→改→save 的无状态用法（每次导入都重新读盘），对低频导入操作完全值得，还顺带消灭了并发锁。
+
+### E. 切分器：标题栈与贪心打包（为什么不是简单按字数切）
+
+[chunker.ts](../../src/main/services/rag/chunker.ts) 的输入是 parser 产出的块序列（heading / paragraph，paragraph 带 PDF 页码），两阶段处理。
+
+**阶段 1：标题栈**把扁平的块流变成带"面包屑"的语义单元：
+
+```ts
+if (block.kind === 'heading') {
+  while (栈顶.level >= block.level) 栈.pop()   // 同级标题替换、上级标题离开时弹栈
+  栈.push({ level: block.level, text: block.text })
+} else {
+  units.push({ text: block.text, page: block.page,
+              headingPath: 栈.map(h => h.text).join(' / ') })
+}
+```
+
+走一遍 `# A`→段落→`## B`→段落：栈在 `## B` 时弹出同级的 `# A`，每个段落拿到当时的栈快照，如 `"冲煮指南 / 闷蒸"`。引用角标弹窗里的"文档名 / 章节路径 / 页码"出处就来自这里。
+
+**阶段 2：贪心打包**——把段落单元往当前 chunk 里塞，三条封口规则：
+
+1. **超预算封口**：`currentTokens + tokens > 500` 就 flush 另起；
+2. **标题边界强制封口**：即使没超 500，下一段的 headingPath 变了也立刻封口——否则一个 chunk 跨两个小节，标题归属只能保留第一个，检索和引用都丢小节信息；
+3. **单段超长走滑动窗口**：先 flush 已有内容，再把这一个段落按窗口切，回退 50 token 时优先找句读标点（`。！？!?；;`）落在句子边界，且强制 `start` 至少前进 1 字符防止无标点超长文本死循环。
+
+重叠只在第 3 条（单段超长）发生：段落是天然语义边界，让相邻块重复整个正常段落只会让 topK 被重复内容占满，弊大于利。最后 `mergeTinyTail` 把不足预算 15% 的孤儿尾巴并进上一块（同标题前提下，宁可略超 500 也不要碎块）。
+
+### F. trigram：中文关键词匹配为什么能用起来
+
+M4 会细讲检索数学，这里先看存储层。chunk_fts 是一张 SQLite FTS5 虚拟表：
+
+```sql
+CREATE VIRTUAL TABLE chunk_fts USING fts5(
+  content,
+  chunk_id UNINDEXED,
+  tokenize = 'trigram'
+);
+```
+
+FTS5 是 SQLite 内置的全文索引引擎：写入文本时它按 tokenizer 切词，为每个词项维护**倒排索引**（词 → 出现它的 chunk 列表），查询时走索引而不是全表 LIKE 扫描。trigram 分词器把每个词切成连续三字符：`闷蒸咖啡`→`闷蒸咖`、`蒸咖啡`（及相邻三元组）。查询 `闷蒸咖` 同样切三元组去查倒排表，于是**中文不需要分词器**（unicode61 会把连续中文当成一个巨型 token，基本不可用）也能做子串匹配。`chunk_id UNINDEXED` 表示它只作为关联字段存着、不参与建索引（它是 uuid 不是文本）；库过滤通过 JOIN document 在查询时完成，不冗余 kb_id。
+
+schema 注释里还有一条架构决策：FTS 同步**不用触发器**。因为 chunk 只有两个写路径——批量插入（导入）和随文档 CASCADE 删除——在仓储的同一事务里双写 chunk + chunk_fts 更直观可控，避免"改了 chunk 表却想不起 FTS 触发器为什么没触发"的隐式耦合。
+
+### G. embedding 缓存：一次导入为什么大部分钱不用花
+
+[embedder.ts](../../src/main/services/rag/embedder.ts) 的 `embedMany` 是三趟而不是直接批量请求：
+
+1. **批内去重**：`hash = sha256(模型名 + '\0' + 文本)`，Set 去重——50 token 重叠窗口、跨文档重复段落，一个批次只算一次；
+2. **读缓存**：每个唯一 hash 查 `embeddings-cache/{hash}.json`，命中直接取向量；
+3. **只请求缺失项**：未命中的才发 HTTP（串行，本地模型更稳，单条 60s 超时照顾冷启动），请求回来立刻写缓存文件，最后按原始顺序回填。
+
+key 里的 `模型名` 是安全开关（M3 自测题 4 已论证）；`\0` 分隔符防止模型名和文本拼出歧义。缓存写失败被静默吞掉——缓存只是优化不是数据源，磁盘满/权限问题不该让导入失败；但 404 不吞：Ollama 返回 404 意味着模型没 pull，错误文案直接给出 `ollama pull <model>` 命令。
+
 ## 踩坑记录
 
 - **pdfjs-dist 6 在 Electron 主进程加载**：它是 ESM 且自带 worker，必须动态 `import()` 且 worker 配置 externalize，静态 require 会炸。
