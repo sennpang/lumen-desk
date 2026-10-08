@@ -26,6 +26,8 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
+# Obsidian 笔记库的本地工作区配置（每人不同，不入库）
+.obsidian/
 
 # ---------- 环境变量 / 本地密钥 ----------
 # 任何 .env 都不入库；API Key 运行时由 safeStorage 加密存到 userData，不落仓库
