@@ -302,6 +302,9 @@ Renderer                     Main
 2. 为什么 preload 不能直接 `exposeInMainWorld('ipc', ipcRenderer)`？
 3. 开发态和打包态，窗口分别加载什么？代码里靠哪个变量区分？
 4. 主进程想主动给渲染端发消息用什么方法？M0 用到了吗（哪个里程碑开始用）？
+5. 渲染端把一个"带方法的类实例"通过 invoke 传给主进程会发生什么？File 对象过边界为什么拿不到磁盘路径？这条边界规则怎样决定了 shared/types.ts 的形态？
+6. 不看代码，用最原始的 `send/on` 手写一个 invoke：渲染端和主进程各自要维护什么？主进程 handler 抛错时渲染端怎么知道？这套机制解释了 invoke 的哪两个天生特性？
+7. 同一条 `chat:event` 频道上同时有两次流式回答在跑，渲染端靠什么不把两次的 token 串在一起？为什么不开 `chat:event:${streamId}` 动态频道？preload 退订时为什么必须传回当初 on 的同一个函数引用？
 
 ## 自测题参考答案
 
@@ -335,3 +338,30 @@ Renderer                     Main
 用窗口的 `webContents.send(频道, 数据)`（多窗口时遍历 `BrowserWindow.getAllWindows()` 广播）；渲染端在 preload 里用 `ipcRenderer.on(频道, listener)` 订阅。这是与 invoke/handle 请求-响应方向相反的"主 → 从"推送。
 
 M0 没用到——M0 只有渲染端点按钮 → `app:ping` 一问一答。M1 开始大量使用：流式聊天的 token 一帧帧从主进程推给渲染端（`chat:event` 频道）。之后 M3 的 `kb:event`（导入进度）、M5 的 `confirm_required`（审批卡片）、自动更新的 `update:event` 都是同一模式。
+
+**5. 渲染端把一个"带方法的类实例"通过 invoke 传给主进程会发生什么？File 对象过边界为什么拿不到磁盘路径？这条边界规则怎样决定了 shared/types.ts 的形态？**
+
+两个进程是两个独立的 V8 堆，参数跨边界走的是**结构化克隆**（深拷贝普通数据，不是传引用）。结构化克隆只搬数据不搬行为：
+
+- 带方法的类实例过去之后，原型链和方法全部丢失，函数属性被克隆成 `undefined`，主进程收到的只是一个形状相似的普通对象；
+- 活对象（WebContents、Database 连接、AbortController）永远不能过边界，只能传一个 id 字符串，对方拿 id 在自己这边的注册表里找对象——streamId、confirmId、kbId 全是这个套路；
+- File 对象能克隆出文件的名字/大小/二进制内容，但**故意不带磁盘绝对路径**（Chromium 的安全设计：网页不该知道用户磁盘结构）。所以 M3 拖拽导入必须在 preload 里调 `webUtils.getPathForFile(file)` 先把路径转成字符串再传。
+
+这条规则直接决定了 [shared/types.ts](../../src/shared/types.ts) 的形态：跨进程类型（`RunPayload`、`ConversationInfo`、`StreamEvent`……）全部是纯 interface——普通对象、数组、字符串、数字、布尔、null，没有类、没有方法。先定义在 shared/ 还有一个额外好处：主进程和渲染端对着同一份类型编译，边界两侧不可能对报文形状理解不一致。
+
+**6. 不看代码，用最原始的 `send/on` 手写一个 invoke：渲染端和主进程各自要维护什么？主进程 handler 抛错时渲染端怎么知道？这套机制解释了 invoke 的哪两个天生特性？**
+
+渲染端维护三样东西：一个自增请求序号 `seq`、一张 `pending: Map<id, {resolve, reject}>`、一个固定的回信监听器。每次调用：`new Promise` 里把它的 resolve/reject 以新 id 存进 Map，再 `send('__myRequest__', {id, channel, args})`；监听器收到 `__myResponse__` 按 id 查到 waiter、从 Map 删除、按 `ok` 标志 resolve 或 reject。主进程维护一张频道→处理函数分发表：收到请求按 channel 找函数执行，成功回 `{id, ok:true, value}`，try/catch 到异常回 `{id, ok:false, error: String(err)}`——回信靠 `event.sender.send` 找回来时那个窗口。
+
+这套手写版解释了 invoke 的两个天生特性：
+
+1. **返回值必然是 Promise**：跨进程往返是异步的，回信时间未知，只能先挂起一个 Promise 等编号回信；主进程函数即使同步 return，渲染端拿到的也是 Promise。
+2. **一个 Promise 只能 settle 一次，所以 invoke 天生只适合一问一答**：一次调用对应一条成功/失败回信。主进程要连续推 N 条（流式 token）Promise 模型表达不了，必须另走 `webContents.send` 推送方向。另外错误回执是这张表的必备行，不是可选功能——项目约定"哪怕不要返回值也用 invoke"（如 `chat:stop`），图的就是主进程出错时渲染端能 catch 到。
+
+**7. 同一条 `chat:event` 频道上同时有两次流式回答在跑，渲染端靠什么不把两次的 token 串在一起？为什么不开 `chat:event:${streamId}` 动态频道？preload 退订时为什么必须传回当初 on 的同一个函数引用？**
+
+靠事件信封上的 **streamId**：频道只有一条固定的 `chat:event`，所有运行的事件都从这一条总线下来，每个事件都带 streamId；渲染端全局只订阅一次，reducer 里只处理与"当前 activeRun 的 streamId"匹配的事件，不匹配的直接忽略。这是"一条总线 + 信封流水号"：频道是邮政系统（固定、注册一次），streamId 是每封信的订单号（动态、随业务创建销毁）。
+
+不开动态频道的原因：动态频道要求每次发送前 `on('chat:event:'+id)`、结束后 `removeListener`，多窗口/多并发时每个组件都可能重复订阅，错一步就串流或泄漏；固定频道把"注册/退订一次"和"按内容分流"两个问题彻底分开，M5 的 confirmId、M3 的 kbId/docId 复用的是同一个模式。
+
+退订必须传同一个函数引用，因为 `ipcRenderer.on/off` 的监听器表按函数身份匹配，内部还包了一层 listener（剥掉 IpcRendererEvent，只把业务数据交给回调）。如果退订时临时写一个新箭头函数，表中查不到、旧监听器永远不摘——React 组件卸载后闭包里的 setState/store 仍被引用，开发态 StrictMode 双重挂载还会让监听器翻倍累积。所以 preload 把 listener 存下来、由返回的退订函数闭包引用它。
