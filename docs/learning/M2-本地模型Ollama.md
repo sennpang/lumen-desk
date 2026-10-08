@@ -74,3 +74,42 @@ UI 需要区分"没装"、"没启动"、"启动了但没模型"三种状态来�
 2. `apiKey: 'ollama'` 这个占位串能不能省？为什么？
 3. 发现服务为什么返回结构化状态而不是直接抛错？列出至少三种要区分的用户状态。
 4. 如果让你再接一家"OpenAI 兼容但报文有细微差异"的供应商，你会改哪几个文件？哪个文件坚决不该动？
+
+## 自测题参考答案
+
+**1. 为什么加 Ollama 支持时 `client.ts` 几乎不用改？这依赖 Ollama 的什么能力？**
+
+依赖 Ollama 提供了 **OpenAI 兼容端点**：除了自家原生的 `/api/chat`、`/api/generate`，Ollama 还暴露 `/v1/chat/completions` 和 `/v1/embeddings`，请求/响应报文就是 OpenAI 那套（messages 数组、SSE 的 `data:` 帧、`choices[0].delta.content`）。
+
+所以本地模型在协议层"伪装"成一个 OpenAI 服务，M1 手写的客户端只认 `{baseUrl, apiKey, model}` 这个统一形态，根本不知道"provider"概念存在。接入 Ollama 时改动只发生在 resolver（把 baseUrl 指到 `http://127.0.0.1:11434/v1`）和发现服务（用 Ollama 原生 API 探活/列模型）。M1 里写的防御式访问（最后一帧 `choices` 为空数组、usage 单独出现）在 Ollama 身上刚好被再次验证——兼容是大体兼容，边界差异仍要按防御式处理。
+
+**2. `apiKey: 'ollama'` 这个占位串能不能省？为什么？**
+
+不能（在当前客户端实现下）。Ollama 本身不校验授权，随便给什么都行，但 M1 的 `client.ts` 对所有端点走同一条 OpenAI 协议路径：无条件附带 `Authorization: Bearer <apiKey>` 请求头。如果本地路径给空串/undefined：
+
+- 要么客户端要分叉出"本地不发 Authorization、云端发"的逻辑，归一化被打破；
+- 要么发出 `Authorization: Bearer undefined` / `Bearer ` 这种畸形头，部分代理、本地中间件或将来换成需要鉴权的本地推理服务（LiteLLM、内网网关）会直接拒掉。
+
+给一个非空占位串（`'ollama'`），协议形状完整、两条路径零分叉、对 Ollama 无副作用。它不是真正的密钥，只是"协议要求这个头存在"的填充物。
+
+**3. 发现服务为什么返回结构化状态而不是直接抛错？列出至少三种要区分的用户状态。**
+
+因为"环境缺失"对这类产品是**正常状态而不是异常**，UI 必须根据不同状态给出不同的下一步引导，而不是一条干巴巴的错误文案。发现服务（ollama.ts）把探活/列模型的失败全部归一为 `{ available, reason, version? }` 正常返回，至少区分：
+
+1. **没安装**：11434 连接被拒/超时且本机找不到服务 → UI 给下载链接和安装三步引导；
+2. **已安装但没启动**：探测到过安装痕迹但当前端口无响应（或直接连接失败）→ 提示 `ollama serve` / 从菜单栏启动；
+3. **已启动但没有模型**：`/api/version` 通了但 `/api/tags` 列表为空 → 引导执行 `ollama pull qwen2.5`；
+4. （第四态）**就绪**：版本号 + 模型列表都拿到了，下拉框列出可选模型及量化信息。
+
+如果直接 throw，这四种情况在渲染端只会塌缩成一个 reject，丢失引导所需的全部信息；而且 IPC 抛错会让"检查环境"这种只读操作看起来像程序故障。
+
+**4. 如果让你再接一家"OpenAI 兼容但报文有细微差异"的供应商，你会改哪几个文件？哪个文件坚决不该动？**
+
+改：
+
+- [resolve.ts](../../src/main/services/llm/resolve.ts)：provider 联合类型加成员（如 `'zhipu'`），补它的 baseUrl 默认值、模型名解析、需要的话鉴权方式；
+- 设置相关：[shared/types.ts](../../src/shared/types.ts) 的 provider 枚举、设置表单 UI（厂商选择、Base URL、模型输入项）；
+- 如果它的"环境发现"需要特殊探活（像 Ollama 那样），再加一个发现模块和只读 IPC 频道；
+- 如果差异在 SSE 报文边界（比如字段名、帧格式不同），在 client.ts 的解析处加**最小兼容分支**，但优先判断是不是能通过防御式访问吸收掉。
+
+坚决不该动的是**聊天主链路的协议形态**：`{baseUrl, apiKey, model}` 归一化出口、IPC `chat:run`、渲染端 useChat——一旦让 provider 概念渗漏到这些层，每接一家都要全链路改一遍，归一化模式就白做了。client.ts 的理想状态是"不知道任何供应商名字"。

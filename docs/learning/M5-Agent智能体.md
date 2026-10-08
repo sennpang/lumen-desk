@@ -113,3 +113,68 @@ tool 角色消息是喂给模型的对话协议构件，不是给用户看的聊
 4. 为什么 `chat:stop` 要先 resolve 挂起审批再 abort？少这一步会泄漏什么？
 5. 一个工具执行时抛了未预期异常，用户在界面上会看到什么？为什么看不到红色崩溃？
 6. 为什么不把 tool 角色消息也存进 message 表？
+
+## 自测题参考答案
+
+**1. 不看代码画出 ReAct 一轮里 messages 数组的追加顺序，并解释"成对"为什么是协议硬要求。**
+
+初始：`[system(Agent 规则与工具说明), ...历史对话, user(本轮问题)]`。
+
+模型第 1 次返回带工具调用后，严格按这个顺序追加：
+
+```
+assistant { content?: 思考文本, tool_calls: [
+  { id:'call_1', function:{ name:'open_url', arguments:'{...}' } },
+  { id:'call_2', function:{ name:'get_current_datetime', arguments:'{}' } }
+]}
+tool { tool_call_id:'call_1', content:'观察结果/错误文本' }
+tool { tool_call_id:'call_2', content:'2026-10-08 ...' }
+```
+
+然后拿整个数组再请求模型（第 2 轮）；若第 2 轮还调工具，再来一组 `assistant(tool_calls)` + 对应数量的 `tool`，直到某轮 assistant 没有 tool_calls——它的 content 就是最终回答。
+
+"成对"是 OpenAI 协议的硬要求：**每个 assistant 消息里的每个 tool_call_id，下一次请求必须有且仅有一条 role='tool' 且 tool_call_id 匹配的结果消息**。缺一条、多条、id 对不上，服务端直接 400。语义上也合理：assistant 消息声明"我做了这几个调用"，tool 消息回答"每个调用的结果是什么"——请求-响应不能悬空，否则模型上下文里存在"做了动作但永远等不到结果"的非法状态。
+
+**2. 模型把 arguments 分片吐成了 `{"url":"htt` + `p://x"}`，代码在哪一层、用什么数据结构拼回完整 JSON？**
+
+在 [llm/client.ts](../../src/main/services/llm/client.ts) 的 SSE 解析层（runner 拿到的已经是完整工具调用）。tool_calls 和正文一样是流式增量，但它是**数组分片**：首片带 `index`、`id`、`function.name`，后续片只带同一个 `index` 和 `function.arguments` 的字符片段。归并结构是 `Map<index, 累加器>`：
+
+- 以 `delta.tool_calls[i].index` 为 key（模型可能并行吐多个工具调用，不能按下标顺序假设）；
+- 首片初始化累加器（存 id/name、arguments = ''）；
+- 后续片把 `arguments` 字符串**逐片拼接**；
+- 流结束后对每个累加器的 arguments 做一次 `JSON.parse`——在这一刻之前它都不是 JSON，只是半截字符串，中途 parse 必炸。
+
+用数组末尾覆盖或"取最后一片"都会丢 id/name 或把 arguments 截断成残片。parse 失败不在这层抛，而是交给 runner 变成"参数 JSON 错误"观察让模型自纠。
+
+**3. 用户点"拒绝"后，循环里发生了什么？模型为什么不会反复重试同一个危险操作？**
+
+审批 Promise 被 `resolve(false)` 放行，runner **不执行工具**，而是生成一条 tool 结果消息，内容是明确的观察文本（"用户已拒绝该操作"），照常与 assistant 的 tool_calls 成对追加进 messages，然后进入下一轮模型请求。
+
+模型读到的上下文是："我请求打开这个链接 → 用户拒绝了"。协议上这次工具调用已经完整结束（有结果了），模型没有理由、也没有机制自动重发同一个调用——它要么换方案（用已有信息回答）、要么向用户解释为什么需要这个操作、让用户自己决定是否重新提问。真正需要用户再次授权时，模型会发起一个**新的** tool_call，UI 会再弹一次确认卡。也就是说，防重试不是靠代码硬拦"同名工具只能调一次"，而是靠"拒绝结果回流给模型"这种协议层面的反馈；副作用工具白名单（`^https?://`、保存对话框）则是纵深防御。
+
+**4. 为什么 `chat:stop` 要先 resolve 挂起审批再 abort？少这一步会泄漏什么？**
+
+因为审批的挂起点是 runner 里的 `await new Promise(resolve => pendingConfirms.set(confirmId, {resolve, streamId}))`——这个 Promise 跟 HTTP 请求没有任何关系，`AbortController.abort()` 只能中断 fetch，碰不到它。
+
+如果只 abort 模型请求：
+
+- 正卡在审批 await 上的那次工具调用根本没发出模型请求（或正在等用户），abort 对它无意义，Promise 永远 pending；
+- runner 协程永远停在 await，不会走到任何收尾逻辑（streamId 的 ActiveRun 不摘除、streaming 占位消息不更新）；
+- `pendingConfirms` Map 里的 resolver 与其闭包（streamId、回调引用）永不释放 = 资源泄漏；此时用户若在陈旧的确认卡上点按钮，还会 resolve 一个已经"停止"的运行，行为未定义。
+
+正确顺序：先遍历本次 streamId 的挂起审批全部 `resolve(false)`（按"拒绝"语义给模型/收尾一个确定结果，循环解开），再 abort 进行中的模型请求，最后统一走 stop 收尾。
+
+**5. 一个工具执行时抛了未预期异常，用户在界面上会看到什么？为什么看不到红色崩溃？**
+
+时间线上该工具步骤会停在"已调用"并收到一条 observation 观察条目，内容是被捕获的错误信息（执行输出统一截断到 4000 字，防止超长报错刷爆上下文）；对话继续——模型读到"工具执行失败：<原因>"后通常会自纠（改参数重试）或向用户说明失败原因并给出替代方案。
+
+看不到红色崩溃是因为工具契约规定 **execute 永不抛穿**：所有工具的 execute 统一返回 `{ok, output}` 形态，runner 对每个调用都 try/catch，把任何异常（不只是"预期内"的）转写成 observation 文本。工具是模型的"外部世界"，外部世界失败是正常事件（网页打不开、用户取消了保存对话框、路径无权限），要变成模型能读懂的文字，而不是炸穿整个 ReAct 循环、把一次工具失败升级成整轮对话失败。未捕获异常只剩在主进程日志里，不会传导成渲染端错误条。
+
+**6. 为什么不把 tool 角色消息也存进 message 表？**
+
+两类消息的用途完全不同：
+
+- `role:'tool'` 消息是**喂给模型的协议构件**，用来满足"tool_calls 必须配对"的 API 要求，内容是机器读的观察文本（错误、检索片段 JSON、时间字符串），不是给人看的聊天记录；
+- 用户可见的对话历史应该只有"用户说了什么、助手最终回答了什么"。如果把 tool 消息混进 message 表，会话列表渲染要到处过滤角色，`buildChatHistory` 的语义被污染，重新生成/继续对话时还要小心这些内部构件的顺序与配对（少一条就 400）。
+
+所以设计成两层：`message` 表只存 user 消息和 assistant 最终文本（M5 后 assistant 的中间思考也不入气泡）；💭思考 / 🔧工具调用 / ↳观察以 `agent_step` 行挂在 assistant 消息 id 下（带 seq、审批状态），仅供历史时间线重建展示。需要重放 Agent 协议时由 steps 重建工具轮，而不是依赖 message 表。

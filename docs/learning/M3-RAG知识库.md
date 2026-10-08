@@ -102,3 +102,80 @@ SQLite 不擅长高维浮点向量的近邻检索（没有 ANN 索引，只能�
 4. embedding 缓存的 key 为什么要包含模型名？只 hash 文本会怎样？
 5. 模型在回答里写了一个不存在的 `[9]`，系统会怎样？这种防御为什么要在渲染层做？
 6. 用户导入到一半强退，哪些机制保证不会留下半个索引/半个文档？
+
+## 自测题参考答案
+
+**1. 画出从"用户拖入一个 PDF"到"回答里出现 `[1]` 角标"经过的全部模块与存储。**
+
+分两个阶段。
+
+导入（离线，`kb:import` 立即返回，后台串行）：
+
+```
+拖拽/选择文件
+  → preload webUtils.getPathForFile 解析真实磁盘路径（浏览器 File 不给 path）
+  → IPC knowledge.ts → indexing.importDocuments
+      ├─ readFile + sha256：同库内容 hash 去重
+      ├─ repo.insertDoc：document 行落 SQLite，status='parsing'，推 doc_enqueued
+      ├─ parser.parseDocument：pdfjs（动态 import + worker）→ 带标题栈/页码的块
+      ├─ chunker.chunkDocument：~500 token、50 重叠、标题归属 → RawChunk[]
+      ├─ embedder.embedMany：/v1/embeddings 批量向量化，sha256(模型+文本) 文件缓存
+      ├─ repo.insertChunks：一个事务里写 chunk 行 + chunk_fts（SQLite）
+      ├─ vectorStore.appendVectors：整数 label↔uuid 写 vectors/{kbId}.index
+      │                                （.tmp + rename 原子写）+ .meta.json
+      └─ updateDocStatus('ready', n)：推 doc_result
+存储：SQLite（document/chunk/chunk_fts）+ 文件（HNSW index + meta.json + embedding 缓存）
+```
+
+提问（在线，rag 分支）：
+
+```
+用户发送 → embedOne(问题) → vectorStore.searchKnn(topK=6, cosine)
+  → 取回 chunk 原文 → retriever 编号 [1]…[6]、附文档名/页码注入 system 提示词
+  → 检索完成即推 citation 事件（不等模型说完）+ citations 写 message.meta
+  → streamChatCompletion（模型被要求只依据资料、结论后标序号）
+  → token 流 → MessageBubble：正则 /\[(\d{1,2})\]/ 把序号渲染成角标
+  → 点角标 → IPC kb:chunk 按 chunkId 懒加载 → 原文弹窗（文档名/页码）
+```
+
+**2. 切片为什么要重叠？如果把 overlap 设成 0，什么类型的问题最先出坏答案？**
+
+一个论点/一句话可能正好落在切片边界上，被切成"前半句在块 A、后半句在块 B"。重叠（50 token）让边界两侧各带一份对方的上下文，无论检索命中哪一块，模型都能看到完整说法，降低"答案腰斩"。
+
+overlap=0 时最先坏掉的是**答案依赖跨句完整陈述的问题**：比如手册里"错误码 E1045（第 47 页）表示传感器过热，请断电冷却 10 分钟"正好从"请断电"处切开——"E1045 是什么意思"只命中前块（有编号没处置办法），"过热怎么办"可能命中后块（有办法但不知道在说哪个错误码），两个块单独看都不完整。其次是带指代承接的问题（"该设备随后应……"里的"该设备"在上一块）。重叠不是越多越好：太大会让同一内容在多个 chunk 重复，挤占 topK 名额、抬高成本，500/50 是经验折中。
+
+**3. HNSW label 为什么不能直接用 chunk uuid？`.meta.json` 里至少需要哪些字段？**
+
+hnswlib-node 的 label 在 C++ 层是 `size_t`（无符号整数），API 只接受整数；uuid 是字符串，无法作为图节点的 label 存储。所以在"通用库约束"和"业务模型"之间加一层翻译（见 vectorStore.ts）：整数 label 单调分配，uuid ↔ label 映射存索引旁的元数据文件。至少需要：
+
+- `dim`：向量维度（加载旧索引时校验与当前 embedding 模型是否一致，维度不符直接报错引导重建索引）；
+- `space`：距离度量（项目固定 cosine/'l2' 语义）；
+- `nextLabel`：下一个可分配的整数（单调递增，删除后留空洞但**不复用**——复用会让旧 label 的历史引用指向新向量）；
+- `labels`：`{ [整数label]: chunkId }` 映射，检索拿到整数 label 后靠它换回 chunkId 去 SQLite 取原文。
+
+删除时图上 `markDelete`（打墓碑，不再参与检索）+ 删映射键；全删光则连文件一起删掉重新开始，避免空洞无限累积。
+
+**4. embedding 缓存的 key 为什么要包含模型名？只 hash 文本会怎样？**
+
+向量是"**某个模型**对这段文本的坐标化"，不是文本的固有属性：
+
+- 不同模型维度可能不同（nomic-embed-text 768 维、bge 可能 1024 维），把 A 模型的向量喂给按 B 模型建的 HNSW 索引会直接维度错误；
+- 即使维度相同，不同模型的向量空间互不对齐——"语义相近距离就近"只在同一模型的坐标系内成立，混用等于把两张不同城市地图的坐标混着导航。
+
+所以缓存 key = sha256(模型名 + 文本)。只 hash 文本时，用户切换 embedding 模型或重建索引会命中"文本相同但来自旧模型"的缓存，得到维度崩溃或看似能跑、结果完全乱掉的检索，而且这种错误不报错、极难排查。
+
+**5. 模型在回答里写了一个不存在的 `[9]`，系统会怎样？这种防御为什么要在渲染层做？**
+
+citation 列表只有检索回来的 6 段（编号 1–6）。MessageBubble 用正则 `/\[(\d{1,2})\]/` 匹配正文序号后，要拿编号去 citation 数组取对应来源：取不到（越界、或该序号根本不是引用语境）就**按普通文本渲染 `[9]`**，不生成角标；即使角标点下去，`kb:chunk` 在库里查不到也会返回 null，弹窗不打开。多层防御，任何一层都不相信模型输出。
+
+为什么必须在渲染层（以及为什么源头也要防）：引用编号是模型自由生成的文本，模型会幻觉（资料只有 6 条却写 `[9]`、在没有引用的句子里乱标序号）。系统能控制的是"哪些来源真实存在"——citation 事实由检索端拼好下发，模型只能使用编号、不能创造来源。渲染端是"不可信文本 → UI 元素"的最后边界，把映射失败降级为纯文本，才能保证"界面上每个可点角标背后一定有真实片段"。
+
+**6. 用户导入到一半强退，哪些机制保证不会留下半个索引/半个文档？**
+
+按写入顺序看各层的保护（indexing.ts）：
+
+1. **文档状态机**：document 行一落库就是 `parsing`，只有全部成功（chunks + 向量写完）才置 `ready`。检索/UI 以 ready 为准，中途的文档不会以"完成"的假象出现；失败走 `failed` 并带 error 文案。
+2. **chunk 与 FTS 单事务**：`insertChunks` 在同一个 better-sqlite3 事务里写全部 chunk 行和 chunk_fts——崩溃则整体回滚，不会出现"文本在、FTS 没有"或反之的半批数据。
+3. **向量索引原子写**：`appendVectors` 先写 `{kbId}.index.tmp` 再同卷 rename，rename 原子，崩在写图阶段正式索引保持上一版；meta.json 同样原子写。
+4. **嵌入缓存天然可重入**：向量缓存按内容 hash 散在文件里，重导时已算过的片段直接命中，不重复花钱。
+5. 强退后那张卡片会停在 `parsing`（当前版本不做启动重置，需要删掉该文档重导；因为 fileHash 已登记，重导同一文件会被内容去重跳过，所以要先删卡片）。最窄的不一致窗口是"索引/meta 已更新但 status 还没置 ready"——chunk 与向量实际已写入、检索 SQL 也不按 status 过滤，删掉该文档会级联清 chunk/FTS 并对索引 markDelete，仍可干净回收。
