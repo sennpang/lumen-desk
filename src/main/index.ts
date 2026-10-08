@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { ensureDataDirs } from './paths'
 import { initDb, closeDb } from './db/sqlite'
 import { registerIpcHandlers } from './ipc'
+import { initUpdater } from './services/update'
 
 /**
  * 主进程入口（PRD 第 9 章：双进程模型）
@@ -117,6 +118,8 @@ app.whenReady().then(() => {
   initDb()
   registerIpcHandlers()
   createWindow()
+  // 自动更新：注册事件/IPC 并在 10s 后静默检查一次（仅打包态生效）
+  initUpdater()
 
   // macOS 惯例：点击 Dock 图标时若没有窗口则重建
   app.on('activate', () => {

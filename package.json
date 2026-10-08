@@ -12,13 +12,14 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.main.json && tsc --noEmit -p tsconfig.renderer.json",
     "test": "ELECTRON_RUN_AS_NODE=1 electron --import ./tests/register.mjs --test tests/native.test.ts tests/chunker.test.ts tests/hybrid.test.ts tests/knowledge-repo.test.ts tests/conversations-repo.test.ts tests/backup.test.ts",
-    "dist": "npm run build && electron-builder",
-    "dist:mac": "npm run build && electron-builder --mac",
-    "dist:win": "npm run build && electron-builder --win",
+    "dist": "npm run build && electron-builder --publish never",
+    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "dist:win": "npm run build && electron-builder --win --publish never",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
+    "electron-updater": "^6.8.9",
     "hnswlib-node": "^3.0.0",
     "mammoth": "^1.13.0",
     "pdfjs-dist": "^6.4.299",

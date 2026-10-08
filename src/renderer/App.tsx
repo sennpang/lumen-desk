@@ -9,6 +9,7 @@ import { useChat } from './app/stores/useChat'
 import { useConversations } from './app/stores/useConversations'
 import { useKnowledge } from './app/stores/useKnowledge'
 import { useSettings } from './app/stores/useSettings'
+import { useUpdater } from './app/stores/useUpdater'
 
 type AppView = 'chat' | 'knowledge'
 
@@ -34,6 +35,8 @@ export function App() {
     const offKb = api.knowledge.onKbEvent((ev) => {
       void useKnowledge.getState().handleKbEvent(ev)
     })
+    // 自动更新状态订阅（后台静默检查发现新版本时驱动设置入口红点）
+    const offUpdater = useUpdater.getState().subscribe()
     void useSettings.getState().load()
     void refreshList()
     // M6：查首次引导标记（onboardingDismissedAt=null 则展示）
@@ -44,6 +47,7 @@ export function App() {
     return () => {
       offChat()
       offKb()
+      offUpdater()
     }
   }, [refreshList])
 

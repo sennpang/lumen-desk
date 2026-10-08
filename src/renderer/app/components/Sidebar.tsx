@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../lib/ipc'
 import { useConversations } from '../stores/useConversations'
+import { useUpdater } from '../stores/useUpdater'
 import type { MessageSearchHit } from '../../../shared/types'
 
 interface SidebarProps {
@@ -15,6 +16,12 @@ interface SidebarProps {
  */
 export function Sidebar({ view, onNavigate, onOpenSettings }: SidebarProps) {
   const { list, currentId, createNew, select, rename, remove } = useConversations()
+  // 订阅更新状态的派生标志（state 变化时重渲染）
+  const updateStatus = useUpdater((s) => s.state?.status)
+  const hasUpdate =
+    updateStatus === 'available' ||
+    updateStatus === 'downloading' ||
+    updateStatus === 'downloaded'
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
 
@@ -204,6 +211,13 @@ export function Sidebar({ view, onNavigate, onOpenSettings }: SidebarProps) {
           className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-ink2 hover:bg-paper"
         >
           ⚙️ 设置
+          {/* 后台静默检查发现/下载中/已下载新版本时给个琥珀红点 */}
+          {hasUpdate && (
+            <span
+              className="ml-auto inline-block h-2 w-2 rounded-full bg-amber-500"
+              title="有新版本可用"
+            />
+          )}
         </button>
       </div>
     </aside>

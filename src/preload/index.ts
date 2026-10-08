@@ -12,7 +12,8 @@ import type {
   OllamaModelInfo,
   OllamaStatus,
   SaveSettingsInput,
-  SettingsView
+  SettingsView,
+  UpdateState
 } from '../shared/types'
 
 /**
@@ -170,6 +171,24 @@ const api = {
      * 必须在 preload 里经 webUtils 解析；主进程只信任这里出来的路径。
      */
     getPathForFile: (file: File): string => webUtils.getPathForFile(file)
+  },
+
+  updater: {
+    /** 拉取当前更新状态（打开设置弹窗时补拉一次，错过广播也不丢） */
+    getState: (): Promise<UpdateState> => ipcRenderer.invoke('update:get-state'),
+    /** 检查更新；manual=true 时主进程在终端打印失败原因 */
+    check: (manual = true): Promise<UpdateState> =>
+      ipcRenderer.invoke('update:check', manual),
+    /** 下载已发现的新版本（available → downloading → downloaded） */
+    download: (): Promise<UpdateState> => ipcRenderer.invoke('update:download'),
+    /** 退出并安装已下载完成的新版本 */
+    install: (): Promise<void> => ipcRenderer.invoke('update:install'),
+    /** 订阅状态变化；返回取消订阅函数 */
+    onState: (cb: (s: UpdateState) => void): (() => void) => {
+      const listener = (_event: unknown, s: UpdateState) => cb(s)
+      ipcRenderer.on('update:event', listener)
+      return () => ipcRenderer.removeListener('update:event', listener)
+    }
   }
 }
 

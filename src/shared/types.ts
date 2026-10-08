@@ -323,3 +323,39 @@ export interface RetrievedChunk extends ChunkInfo {
   /** 相似度距离（cosine，越小越相似；仅调试/排序展示用） */
   distance: number
 }
+
+// ---------------- 应用自动更新（electron-updater） ----------------
+
+/**
+ * 更新检查/下载状态机。只做"通知 + 手动确认下载"，不静默安装：
+ * idle → checking → available → downloading → downloaded →（重启安装）
+ *                     └→ not-available / error（任意阶段可回到 idle）
+ * unsupported：开发环境或未随安装包分发更新元数据（app-update.yml）
+ */
+export type UpdateStatus =
+  | 'unsupported'
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+export interface UpdateState {
+  status: UpdateStatus
+  /** 远端最新版本号（checking 命中 available 后出现） */
+  version?: string
+  /** 当前运行版本，UI 展示"当前 x → 最新 y"用 */
+  currentVersion: string
+  /** 下载进度 0~100（downloading 阶段） */
+  percent?: number
+  /** 下载速度（字节/秒），UI 可换算成 MB/s */
+  bytesPerSecond?: number
+  /** 已下载/总字节，做 "3.2 / 12.8 MB" 展示 */
+  bytesTransferred?: number
+  totalBytes?: number
+  /** 错误信息（status=error） */
+  error?: string
+  lastCheckedAt?: number
+}

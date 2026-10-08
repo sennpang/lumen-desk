@@ -15,6 +15,7 @@ Lumen Desk 是一个基于 Electron 的桌面应用，把本地大模型（Ollam
 - **会话管理**：历史会话列表、全文搜索消息、自动标题、流式输出
 - **双路模型配置**：本地 Ollama（自动探测与模型列表）或云端 OpenAI 兼容接口（Base URL / API Key / 模型名可配），API Key 经 safeStorage 加密存放
 - **备份与迁移**：设置备份（JSON）与全量数据备份（会话 + 知识库文本），换电脑可恢复
+- **自动更新**：安装包启动后自动检查 GitHub Releases 新版本，手动确认下载、一键重启安装；macOS 双架构分通道（arm64 / x64）
 - **本地优先**：单文件 SQLite + 本地 HNSW 索引；无账号、无 telemetry
 
 ## 技术栈
@@ -86,7 +87,23 @@ docs/learning/      # 模块开发讲义 M0–M6（学习向实现笔记）
 
 日常推送到 `main` 会触发 [CI](.github/workflows/ci.yml)：类型检查 → 冒烟测试 → 三端构建（不打包）。
 
+Release 除安装包外还会上传 electron-updater 需要的更新元数据（`latest.yml`、
+`latest-arm64-mac.yml`、`latest-x64-mac.yml`）与 `.blockmap` 差量文件。
+注意：v0.1.0 及更早的安装包不含自动更新模块，需手动下载一次新版；
+从含更新模块的版本起，后续版本可在应用内更新。
+
 ## 排障 FAQ
+
+**应用如何自动更新？检查不到新版本？**
+安装包启动约 10 秒后会静默检查一次（源：本仓库 GitHub Releases，可在
+设置 →「检查应用更新」手动检查）。发现新版本后需手动点「下载更新」，
+下载完点「重启并安装」。检查失败多为网络无法访问 GitHub——可点设置里的
+Releases 链接手动下载。更新只在安装包中生效，`npm run dev` 开发态显示
+「自动更新仅在安装包中可用」属正常。
+
+> macOS 特别说明：安装包未做 Developer ID 签名，Squirrel.Mac 可能拒绝
+> 自动安装下载好的更新。此时请到 Releases 手动下载 dmg 覆盖安装（数据
+> 在 userData，不受影响）；彻底解决需 Apple Developer 签名 + 公证。
 
 **macOS 提示"无法打开，因为无法验证开发者"？**
 未签名 ad-hoc 包的正常提示。在 Finder 中右键应用 →「打开」→ 再次点「打开」即可；

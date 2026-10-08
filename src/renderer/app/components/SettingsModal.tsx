@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useSettings } from '../stores/useSettings'
 import { useConversations } from '../stores/useConversations'
 import { useKnowledge } from '../stores/useKnowledge'
+import { useUpdater } from '../stores/useUpdater'
 import { api } from '../lib/ipc'
 import type { AppAbout, OllamaModelInfo, OllamaStatus } from '../../../shared/types'
 
@@ -319,6 +320,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
           <BackupSection onImported={() => void load()} />
           <DataBackupSection />
+          <UpdateSection />
           <AboutSection />
         </div>
 
@@ -517,6 +519,113 @@ function DataBackupSection() {
           }`}
         >
           {msg.text}
+        </p>
+      )}
+    </div>
+  )
+}
+
+// ---------------- 自动更新（electron-updater） ----------------
+
+const RELEASES_URL = 'https://github.com/sennpang/lumen-desk/releases'
+
+function UpdateSection() {
+  const state = useUpdater((s) => s.state)
+  const refresh = useUpdater((s) => s.refresh)
+  const check = useUpdater((s) => s.check)
+  const download = useUpdater((s) => s.download)
+  const install = useUpdater((s) => s.install)
+
+  // 打开设置时补拉一次（后台静默检查可能已把状态推到 available/error）
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  const status = state?.status ?? 'idle'
+  const busy = status === 'checking' || status === 'downloading'
+  const percent = Math.round(state?.percent ?? 0)
+  const speed = state?.bytesPerSecond ? `${(state.bytesPerSecond / 1024 ** 2).toFixed(1)} MB/s` : ''
+
+  let headline = '检查应用更新'
+  let detail = '新版本会在启动后自动检查；不会自动下载安装。'
+  if (status === 'unsupported') {
+    headline = '自动更新仅在安装包中可用'
+    detail = '当前为开发环境。正式使用请安装 GitHub Releases 中的安装包。'
+  } else if (status === 'checking') {
+    headline = '正在检查更新…'
+  } else if (status === 'available') {
+    headline = `发现新版本 v${state?.version ?? ''}（当前 v${state?.currentVersion ?? ''}）`
+    detail = '下载完成后需重启应用完成安装；更新源为 GitHub Releases。'
+  } else if (status === 'not-available') {
+    headline = `已是最新版本 v${state?.currentVersion ?? ''}`
+  } else if (status === 'downloading') {
+    headline = `正在下载 v${state?.version ?? ''} … ${percent}%`
+    const got = state?.bytesTransferred ? formatSize(state.bytesTransferred) : ''
+    const total = state?.totalBytes ? formatSize(state.totalBytes) : ''
+    detail = [got && total ? `${got} / ${total}` : '', speed].filter(Boolean).join(' · ')
+  } else if (status === 'downloaded') {
+    headline = `v${state?.version ?? ''} 已下载完成`
+    detail = '点击「重启并安装」立即更新；不操作则下次退出应用时自动安装。'
+  } else if (status === 'error') {
+    headline = '更新失败'
+    detail = state?.error ?? '未知错误'
+  }
+
+  return (
+    <div className="rounded-lg border border-line p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-ink">{headline}</p>
+          <p className="mt-0.5 break-words text-[11px] leading-relaxed text-ink2">{detail}</p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          {status === 'available' && (
+            <button
+              onClick={() => void download()}
+              disabled={busy}
+              className="rounded-md bg-brand px-2.5 py-1 text-xs text-white hover:opacity-90 disabled:opacity-40"
+            >
+              下载更新
+            </button>
+          )}
+          {status === 'downloaded' && (
+            <button
+              onClick={install}
+              className="rounded-md bg-brand px-2.5 py-1 text-xs text-white hover:opacity-90"
+            >
+              重启并安装
+            </button>
+          )}
+          {(status === 'idle' ||
+            status === 'not-available' ||
+            status === 'error') && (
+            <button
+              onClick={() => void check()}
+              disabled={busy}
+              className="rounded-md border border-line px-2.5 py-1 text-xs text-ink hover:bg-paper disabled:opacity-40"
+            >
+              检查更新
+            </button>
+          )}
+        </div>
+      </div>
+
+      {status === 'downloading' && (
+        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-line">
+          <div
+            className="h-full rounded-full bg-brand transition-[width] duration-300"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      )}
+
+      {status === 'error' && (
+        <p className="mt-2 text-[11px] leading-relaxed text-ink2">
+          也可以直接到{' '}
+          <a href={RELEASES_URL} target="_blank" rel="noreferrer" className="text-brand-dark underline">
+            GitHub Releases
+          </a>{' '}
+          手动下载（macOS 未签名包自动安装可能被系统拒绝）。
         </p>
       )}
     </div>

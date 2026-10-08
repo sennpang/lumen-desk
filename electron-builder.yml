@@ -33,7 +33,18 @@ electronLanguages:
 
 # 本地学习项目：无 Apple Developer 账号，显式跳过代码签名，
 # 产出可本机运行/拷给同事的 ad-hoc 包；将来上架再补 identity + 公证。
-publish: null
+#
+# publish 段有两个消费者：
+# 1. 打包时生成 app-update.yml 装进应用（electron-updater 的更新源元数据）
+# 2. electron-builder 自己的发布动作——所有脚本/CI 都显式 --publish never，
+#    产物统一由 release.yml 的 softprops/action-gh-release 上传
+publish:
+  provider: github
+  owner: sennpang
+  repo: lumen-desk
+  # 公开仓库的 Release 资源无需 token；electron-updater 匿名即可拉取
+  # latest.yml/latest-<arch>-mac.yml（受 GitHub API 每 IP 限流时降级报错，UI 提示）
+  vPrefixedTagName: true
 
 win:
   target:
