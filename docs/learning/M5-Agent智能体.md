@@ -99,6 +99,138 @@ tool 角色消息是喂给模型的对话协议构件，不是给用户看的聊
 
 实测 qwen2.5:**0.5b** 在 temp=0 下工具触发率约 2/3——简单单工具够用，多步推理不稳。工程应对：系统提示词明确规则、端到端测试对"期望工具出现"做重试。产品建议：复杂多步 Agent 用 7B（`ollama pull qwen2.5:7b`）。选型要实测，不能假设任何模型都稳定支持 tools。
 
+## 深入：ReAct 循环、审批挂起与乐观流式的代码机制
+
+### A. 主循环就是一个 while(true)：messages 数组在两轮中的完整演化
+
+[runner.ts](../../src/main/services/agent/runner.ts) 的 `runAgent` 骨架极简：
+
+```ts
+const messages = [ system(Agent规则), ...history, user(本轮问题) ]
+while (true) {
+  const toolsAvailable = toolRounds < 6 ? TOOL_SCHEMAS : undefined   // 轮数保险
+  const turn = await callModel(messages, deps, toolsAvailable)
+  if (turn.toolCalls.length === 0 || toolsAvailable === undefined) {
+    return { content: turn.content, ... }        // 无工具调用 = 最终回答，循环出口
+  }
+  messages.push({ role: 'assistant', content: turn.content, toolCalls: turn.toolCalls })
+  for (const call of turn.toolCalls) {
+    const observation = await 执行或拒绝(call)  // 含审批挂起
+    messages.push({ role: 'tool', name: call.name, toolCallId: call.id, content: observation })
+  }
+}
+```
+
+用"帮我把现在的时间存成笔记"走一遍，messages 的形态变化：
+
+```
+初始：[system, ...history, user "帮我把现在的时间存成笔记"]
+第 1 轮模型返回 toolCalls=[get_current_datetime]
+  push assistant {content:"", tool_calls:[{id:c1, name:get_current_datetime}]}
+  push tool      {tool_call_id:c1, content:"2026-10-08 14:03:12"}
+第 2 轮模型看到时间，返回 toolCalls=[save_note]（需审批）
+  push assistant {content:"我先查到时间…", tool_calls:[{id:c2, name:save_note, args:{content:"…"}}]}
+  （用户点批准）push tool {tool_call_id:c2, content:"✅ 已保存到 …"}
+第 3 轮模型无 toolCalls，content="已保存：2026-10-08 14:03:12" → return，循环结束
+```
+
+**循环退出的唯一条件是"模型这一轮没再调工具"**——决定何时信息足够的是模型，不是代码。代码要做的是兜底：`MAX_TOOL_ROUNDS=6` 到顶后 `toolsAvailable=undefined`，请求里干脆不带 tools 字段，模型物理上无法再发起工具调用（协议里没有工具声明就不能产生 tool_calls，即使它无视系统提示硬吐了，代码也丢弃并强制收尾）；同时注入一条 user 角色的系统提示"别再调工具，直接回答"。双保险：声明层 + 提示词层。
+
+### B. runner 怎么消费分片：为什么 callModel 不能用 for await
+
+M1 讲过生成器 yield 的是增量、return 的是总结算（含 toolCalls）。runner 两边都要：**过程中**要把每片 delta 推给气泡（乐观流式），**结束时**要拿完整 content 与归并好的 toolCalls。所以 `callModel` 必须手写 `gen.next()` 循环：
+
+```ts
+const gen = streamChatCompletion({...})
+let buffered = ''
+while (true) {
+  const { value, done } = await gen.next()
+  if (done) return { content: value.content || buffered, toolCalls: value.toolCalls, ... }
+  buffered += value
+  deps.onAnswerDelta?.(value)      // 过程中：逐片推送
+}
+```
+
+`for await` 只能迭代 yield 的值，生成器的 return 值会被丢掉——这是踩坑记录里那条。client.ts 内部已用 `Map<index, 累加器>` 把 SSE 工具分片归并成完整 ToolCall（id/name 首片到达，arguments 逐字符拼接，流结束才 JSON.parse），runner 看到的 `turn.toolCalls` 已经是归并、解析后的成品，分层职责清晰：**client 管协议分片，runner 管业务循环**。
+
+### C. 乐观流式 + 回滚：为什么要"先推了再说"
+
+Agent 轮有个两难：模型在一轮里**同时**输出思考文本和工具调用，但 SSE 先到的是 content 分片，工具调用在这一轮的最后才出现。如果等整轮结束再显示文本，长回答前会有几十秒沉默；直接把 content 当答案推进气泡，万一这轮带了工具调用，这些字其实是"思考独白"不是最终答案。
+
+方案是乐观更新 + 一次回滚：
+
+```
+callModel 中每片 content → onAnswerDelta → chat.ts 累积进气泡（用户看到字在滚）
+整轮结束发现有 toolCalls：
+  → onAnswerReset()：清空气泡里本轮文本（chat 累积 answer 清零，推 agent_answer_reset）
+  → 同一段文本以 thought 步骤（recordStep）挂进 agent_step 时间线折叠区
+最终轮（无 toolCalls）的 content：不 reset，留在气泡 = 最终答案
+```
+
+用户看到的效果：文字先在气泡里出现，模型决定调工具时文字"移入"💭思考折叠区，气泡清空等最终答案。文本从未丢失（同一份 buffered 落两处之一），只是最终归属由"这轮有没有工具调用"在轮末决定。这比"给工具轮单独走非流式请求"体验好得多——思考过程也可见。
+
+### D. 审批：一个 Promise 怎么把循环"冻"在半路，又怎么被另一扇门唤醒
+
+runner 在执行副作用工具前的代码：
+
+```ts
+if (tool.requiresConfirm) {
+  const confirmId = randomUUID()
+  updateStepConfirm(callStep.id, { confirmId, confirmStatus: 'waiting' })
+  deps.onStep?.(...waiting)                          // 渲染端弹确认卡片
+  approved = await deps.onConfirm?.({ confirmId, stepId, toolName, args, preview })
+  updateStepConfirm(callStep.id, { confirmStatus: approved ? 'approved' : 'denied' })
+}
+if (!approved) observation = '用户拒绝了该操作。不要重试……'
+else { const r = await tool.execute(args, toolCtx); observation = r.output }
+```
+
+关键：`await deps.onConfirm(...)` 不是 await 网络，而是 await 一个**存储在 Map 里的、由另一个 IPC 调用来 resolve 的 Promise**。看 chat.ts 的配对代码：
+
+```ts
+// 发起审批时（runner 的 onConfirm 回调）：造一个 Promise，把 resolve 存进 Map
+pendingConfirms.set(confirmId, { resolve, streamId })
+
+// 用户点按钮时（另一扇门！）：
+ipcMain.handle('chat:confirm-resolve', (_e, { confirmId, approved }) => {
+  const pending = pendingConfirms.get(confirmId)
+  if (!pending) return                    // 已随停止清理/重复点击：幂等忽略
+  pendingConfirms.delete(confirmId)
+  pending.resolve(approved)               // runner 里那个 await 在这一刻解冻
+})
+```
+
+这就是"协程挂起"的完整形态：runner 的执行上下文冻结在 await 行（局部变量、messages 数组全部保留），主进程事件循环空出去处理别的事；用户点击经 IPC 进来，resolve 被调用，runner 从冻结处继续。批准→execute；拒绝→拒绝文本作为观察回灌（模型读到后不会重试，自测题 3 已论证）。
+
+**停止时为什么必须先 resolve 再 abort**（chat.ts chat:stop 里的顺序）：
+
+```ts
+for (const [id, pc] of pendingConfirms) if (pc.streamId === streamId) { pc.resolve(false); ... }
+activeRuns.get(streamId)?.controller.abort()
+```
+
+abort 只能让进行中的 fetch 抛错，碰不到用户自建的审批 Promise；不先 resolve，runner 永远卡在 await，ActiveRun 不摘除、Map 里的闭包泄漏。全部按"拒绝"放行后，循环走到下一轮模型请求时正好撞上 abort，统一收尾。
+
+### E. 三层防击穿：任何失败都变成模型可读的观察
+
+一个工具调用有三个失败点，runner 全部收编成 observation 文本，循环永远不被异常炸穿：
+
+1. **参数 JSON 坏**（模型吐了半截/格式错）：`parseToolArgs` 返回 `{ok:false, error}`，不执行任何工具，error 文案直接当观察——模型读到"参数不是合法 JSON：…"后通常会在下一轮修正参数重试；
+2. **工具名不存在**（模型幻觉了一个没注册的工具）：观察文本里附上**可用工具清单**，等于给模型一次纠偏机会；
+3. **execute 内部抛异常**（磁盘满、shell.openExternal 失败等真实世界故障）：try/catch 包在 execute 外，`⚠️ 工具执行抛出异常：…` 进观察。
+
+再加两道长度闸：观察统一截断 4000 字符（检索工具自身先截到每片 600 字、top_k 最多 10），防止一次工具返回把上下文窗口撑爆。**工具是模型的外部世界，外部世界失败是常态**——这是 Agent 与普通函数调用在错误观上的核心差别。
+
+### F. 工具的三件套与 agent_step 的时间线落库
+
+每个工具定义是三个面（[tools.ts](../../src/main/services/agent/tools.ts)）：
+
+- `schema`（JSON Schema + 自然语言 description）：**给模型看的契约**，模型靠 description 决定"何时调、怎么填参"（query 的描述里甚至写了"中文 2 字以内换措辞"，把 M4 的 trigram 限制教给模型）；
+- `preview(args)`：**给人看的一句话**，确认卡片上展示，禁止把完整参数裸贴（参数可能含大段文本）；
+- `execute(args, ctx)`：**真正做事**，返回 `{ok, output}` 字符串契约。`requiresConfirm` 是风险分级开关：检索/时间为只读直接执行，open_url/save_note 副作用先审批。
+
+时间线持久化：`recordStep` 每次 `insertStep({messageId, seq: seq++, ...})`，一个调用产生两个节点（tool_call + observation，可能还有 thought）。审批态在同一行上更新两次：插入时 waiting → 决议后 approved/denied（`updateStepConfirm`），所以历史时间线重建时能看到审批结果。重新生成时删除末尾 assistant 消息，agent_step 通过外键 CASCADE 自动清掉，时间线不会残留上一轮的步骤。**message 表保持纯净（只有对话），agent_step 表承载全部过程**——展示走时间线，重放走 messages 重建，各取所需。
+
 ## 踩坑记录
 
 - 测试等待审批时，谓词不能把"已处理的 confirm_required"当未决事件，否则提前 break 漏掉后续 observation；同一个 stepId 的 waiting→approved 是两条事件，断言状态要取最后一条
