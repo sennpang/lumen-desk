@@ -245,6 +245,8 @@ abort 只能让进行中的 fetch 抛错，碰不到用户自建的审批 Promis
 4. 为什么 `chat:stop` 要先 resolve 挂起审批再 abort？少这一步会泄漏什么？
 5. 一个工具执行时抛了未预期异常，用户在界面上会看到什么？为什么看不到红色崩溃？
 6. 为什么不把 tool 角色消息也存进 message 表？
+7. Agent 采用"乐观流式"：工具轮的 content 分片在整轮结束前就被推进答案气泡。凭什么敢先推？如果这一轮最后发现带了 tool_calls，回滚的事件顺序是什么？文本会不会丢、为什么？
+8. MAX_TOOL_ROUNDS=6 到顶后，代码用哪两道强制手段保证模型必须收尾？万一模型在没有 tools 声明的情况下仍吐了 tool_calls，runner 怎么处理？什么情况下用户会看到兜底文案？
 
 ## 自测题参考答案
 
@@ -310,3 +312,26 @@ tool { tool_call_id:'call_2', content:'2026-10-08 ...' }
 - 用户可见的对话历史应该只有"用户说了什么、助手最终回答了什么"。如果把 tool 消息混进 message 表，会话列表渲染要到处过滤角色，`buildChatHistory` 的语义被污染，重新生成/继续对话时还要小心这些内部构件的顺序与配对（少一条就 400）。
 
 所以设计成两层：`message` 表只存 user 消息和 assistant 最终文本（M5 后 assistant 的中间思考也不入气泡）；💭思考 / 🔧工具调用 / ↳观察以 `agent_step` 行挂在 assistant 消息 id 下（带 seq、审批状态），仅供历史时间线重建展示。需要重放 Agent 协议时由 steps 重建工具轮，而不是依赖 message 表。
+
+**7. Agent 采用"乐观流式"：工具轮的 content 分片在整轮结束前就被推进答案气泡。凭什么敢先推？如果这一轮最后发现带了 tool_calls，回滚的事件顺序是什么？文本会不会丢、为什么？**
+
+敢先推的原因是 SSE 的到达顺序：一轮里 content 分片先到，而这一轮"有没有工具调用"要到该轮响应末尾的 tool_calls 分片才知道。若等整轮解析完再显示，长思考期间气泡几十秒沉默，体验不可接受；而"推错了可以撤回"的成本极低——chat.ts 侧只是一个累积字符串。
+
+回滚事件顺序（runner.callModel 整轮结束后）：
+
+1. callModel 过程中每片 content 已经 `onAnswerDelta → emit token`，chat 累积进当前 assistant 气泡，用户看到字在滚；
+2. 发现 `turn.toolCalls.length > 0`：先调 `onAnswerReset()`——chat 把本轮累积的答案文本清零并广播 `agent_answer_reset` 事件，渲染端清空气泡；
+3. 同一段文本（`turn.content.trim()`）立刻以 `thought` 步骤 `recordStep` 落库并推 `agent_step` 事件，出现在时间线的 💭思考折叠区（qwen 工具轮 content 常为空，空就不产生 thought 节点）。
+
+文本不丢：同一份 `buffered`/turn.content 只有两个去向——工具轮转 thought，最终轮留气泡，归属在"轮末有没有 tool_calls"这一刻决定，但内容始终被完整保存。最终轮（无 tool_calls）不 reset，气泡里的分片就是最终答案；只有模型连最终文本都只吐空白时，runner 才补一条兜底文案 onAnswerDelta。
+
+**8. MAX_TOOL_ROUNDS=6 到顶后，代码用哪两道强制手段保证模型必须收尾？万一模型在没有 tools 声明的情况下仍吐了 tool_calls，runner 怎么处理？什么情况下用户会看到兜底文案？**
+
+两道手段是"声明层 + 提示词层"（[runner.ts](../../src/main/services/agent/runner.ts)）：
+
+1. **声明层（物理手段）**：第 7 次进循环时 `toolsAvailable = toolRounds < 6 ? TOOL_SCHEMAS : undefined`，请求体里压根不带 tools 字段。协议上没有工具声明，模型就无法合法产生 tool_calls；
+2. **提示词层**：达到上限的那一轮工具执行完后，往 messages 追加一条 user 消息："（系统提示：工具调用轮数已达上限，请不要再调用工具，基于以上观察直接给出最终回答。）"，引导模型基于已有观察收尾。
+
+模型仍硬吐 tool_calls 的兜底：循环出口判断是 `turn.toolCalls.length === 0 || toolsAvailable === undefined`——只要 toolsAvailable 是 undefined（即到顶后的请求），即使返回里带了 tool_calls 也**一律不执行、不追加消息**，直接把 turn.content 当最终回答返回。防止小模型无视系统提示把循环拖死。
+
+兜底文案"（已达到工具调用上限，且模型未给出文本结论，请基于以上步骤结果查看。）"出现在：到顶后这一轮的 content trim 后为空（模型只吐了被丢弃的 tool_calls、一个字没说）。它通过 `onAnswerDelta` 补进气泡，保证用户不会看到一条空的 assistant 消息；若模型给了文本（哪怕只有一句），就用真实文本、不显示兜底。
