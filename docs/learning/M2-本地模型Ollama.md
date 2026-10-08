@@ -63,6 +63,103 @@ UI 需要区分"没装"、"没启动"、"启动了但没模型"三种状态来�
 
 `resolve.ts` 里有两个 resolver：对话用什么模型、向量化用什么模型互不绑定。用户可以用云端 7B 对话 + 本地 nomic-embed-text 做嵌入（M3 起大量用到），这是成本/隐私/质量的自由组合。
 
+## 深入：归一化防腐层与本地 HTTP 实况
+
+### A. resolver 不是"配置表"，是一道防腐层（ACL）
+
+先看它的真实形状（[resolve.ts](../../src/main/services/llm/resolve.ts)）：
+
+```ts
+export type ResolveResult =
+  | { ok: true; config: ResolvedModelConfig }
+  | { ok: false; message: string }
+
+export function resolveModelConfig(settings, cloudApiKey): ResolveResult {
+  if (settings.provider === 'local') {
+    if (!settings.ollamaModel.trim())
+      return { ok: false, message: '尚未选择本地模型，请在「设置」中检测 Ollama 并选择…' }
+    return { ok: true, config: { baseUrl: settings.ollamaUrl, apiKey: 'ollama', model: … } }
+  }
+  // cloud 分支：先查密钥、再查模型名，各自给人话错误
+  …
+}
+```
+
+它在架构里的位置是一道**防腐层（Anti-Corruption Layer）**：左边是"设置界面长什么样、provider 有几家、密钥存哪个文件"这些易变的世界，右边是 client.ts 那个极简稳定的世界（只认识 `{baseUrl, apiKey, model}`）。所有"世界差异"都在这一个函数里被翻译成统一形态或一句可展示的中文错误，不允许渗漏到右边。
+
+消费方（chat.ts executeRun 开头）的写法因此非常干净：
+
+```ts
+const resolved = resolveModelConfig(settings, cloudApiKey)
+if (!resolved.ok) {
+  emit(target, { type: 'error', streamId, message: resolved.message })
+  return                       // 配置缺失=用户可自行修复的问题，不是异常堆栈
+}
+const { baseUrl, apiKey, model } = resolved.config   // 之后的代码再也没有 provider 分支
+```
+
+注意错误也走**结构化返回而不是 throw**：没配 Key、没选模型都不是程序故障，是用户下一步操作的指引，经 error 事件显示成正常文案。这与发现服务"环境缺失不是异常"是同一条设计哲学。
+
+### B. 一次本地对话在 HTTP 层到底长什么样
+
+把代码翻译成 curl，能彻底消除"Ollama 是不是特殊协议"的疑惑。点击"检测"时主进程发出（回环地址，不出网卡）：
+
+```bash
+# 探活：原生管理接口
+curl http://127.0.0.1:11434/api/version
+# → {"version":"0.5.7"}
+
+# 列模型：原生管理接口
+curl http://127.0.0.1:11434/api/tags
+# → {"models":[{"name":"qwen2.5:7b","size":4700000000,
+#              "details":{"parameter_size":"7.7B","quantization_level":"Q4_0"}}]}
+```
+
+真正发消息时，走的是**兼容接口**，报文和打云端完全同构：
+
+```bash
+curl http://127.0.0.1:11434/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer ollama' \
+  -d '{"model":"qwen2.5:7b","messages":[{"role":"user","content":"你好"}],"stream":true}'
+# → data: {"choices":[{"delta":{"content":"你"}}]}
+# → data: {"choices":[{"delta":{"content":"好"}}]} … data: [DONE]
+```
+
+Ollama 服务端内部做的事是：把这套 OpenAI 报文翻译成自己的执行引擎（模型权重经 llama.cpp/ggml 推理），再把推理输出重新包装成 OpenAI 形态的 SSE。**翻译发生在 Ollama 进程内，我们的应用零感知**——这就是"协议标准化"的杠杆：一个客户端实现，n 个提供方各自做适配。
+
+### C. 探活的三种失败，在 fetch 里长什么样
+
+"没装/没启动/出错"听起来像产品话术，落到 Node fetch 是三个不同的底层结果，[ollama.ts](../../src/main/services/llm/ollama.ts) 用一次 try/catch 把它们全部收编：
+
+```ts
+async function getJson(url: string, timeoutMs: number) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+  if (!res.ok) throw new Error(`Ollama 返回 ${res.status}`)
+  return res.json()
+}
+```
+
+- **没装/没启动（端口无人监听）**：TCP 连接直接被拒，fetch 抛 `fetch failed`，cause 是 ECONNREFUSED；
+- **装了但卡住/端口被占/防火墙丢包**：TCP 没有响应，`AbortSignal.timeout(1500)` 在 1.5 秒后让 fetch 以 TimeoutError 失败——探活超时故意设得很短（1500ms），因为这是用户点一下按钮就盯着看的同步交互，快速失败比准确等待重要；
+- **服务活着但响应异常**：连上了但 HTTP 状态非 2xx，代码显式 throw 带状态码。
+
+`detectOllama` 对以上全部 catch，返回 `{available:false, reason}`——**永不抛异常是探活函数的契约**。而 `listOllamaModels` 恰恰相反，它不 catch、失败直接抛：因为它只在"已经探活成功、用户明确点刷新"时被调用，此时失败才是真正的意外，让 IPC 把 reject 带回 UI 显示具体原因最省事。**同一个文件里两种错误策略，区别不在技术，在调用场景**。
+
+### D. 为什么默认值必须是 127.0.0.1 而不是 localhost
+
+`localhost` 是个主机名，要先做 DNS 解析，而它通常同时有两条记录：IPv4 的 `127.0.0.1` 和 IPv6 的 `::1`。Node/net 层按系统地址选择策略可能**先试 `::1`**；Ollama 默认只绑定 IPv4 回环，于是连接 `::1:11434` 被拒，部分系统不会自动回退到 IPv4（或回退很慢），表现为"明明服务起着却连不上"。写死 IP 字面量同时消灭了 DNS 解析耗时、IPv4/IPv6 选择差异，并且回环地址不经过物理网卡——断网、飞行模式下照样可达，这是本地推理的核心承诺。
+
+### E. 两个 resolver = 两种模型生命周期独立
+
+对话模型与 embedding 模型在 [resolve.ts](../../src/main/services/llm/resolve.ts) 里是 `resolveModelConfig` / `resolveEmbeddingConfig` 两个独立函数，共用网关地址和 Key 但模型名各自校验。为什么必须独立：
+
+- 用途完全不同：对话模型要"会说"，embedding 模型要"会把文本映射到固定维度向量空间"，厂商的模型谱系里这就是两类 SKU（DeepSeek 甚至根本不提供 embedding 接口）；
+- M3 的索引绑定 embedding 模型（向量维度写在 .meta.json），换对话模型不影响已建索引，换 embedding 模型才需要重建；
+- 自由组合：云端强对话模型 + 本地隐私 embedding，或反过来。
+
+两个函数返回同一个 `ResolvedModelConfig` 类型，所以 client（对话）和 embedder（向量化）仍是同一套 HTTP 机制——归一化在两个维度上各做一次。
+
 ## 踩坑记录
 
 - 直接拿 M1 的 SSE 解析打 Ollama 基本能通，但"最后一帧 choices 为空"如果按 `choices[0].delta` 裸取会偶发崩——防御式数组访问在 M1 就该写好，M2 是检验。
